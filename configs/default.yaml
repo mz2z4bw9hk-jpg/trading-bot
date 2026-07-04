@@ -1,0 +1,116 @@
+# PROJECT TITAN — default research configuration.
+#
+# This default runs fully offline on the synthetic regime-switching market so
+# the entire pipeline is verifiable anywhere. For real markets, switch
+# data.provider to "yahoo" (or "csv" with vendor exports) and re-run the full
+# validation protocol in docs/VALIDATION.md before trusting any output.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: synthetic
+  cache_dir: data_cache
+  bars: 2500
+  min_history_bars: 420
+  min_reliability: 0.70
+  max_forward_fill: 2
+
+universe:
+  name: titan-dev
+  benchmark: INDEX
+  instruments:
+    - { symbol: AAA, asset_class: equity, sector: technology }
+    - { symbol: BBB, asset_class: equity, sector: technology }
+    - { symbol: CCC, asset_class: equity, sector: financials }
+    - { symbol: DDD, asset_class: equity, sector: financials }
+    - { symbol: EEE, asset_class: equity, sector: energy }
+    - { symbol: FFF, asset_class: equity, sector: energy }
+    - { symbol: GGG, asset_class: equity, sector: healthcare }
+    - { symbol: HHH, asset_class: equity, sector: healthcare }
+    - { symbol: III, asset_class: etf, sector: broad }
+    - { symbol: JJJ, asset_class: crypto, sector: crypto }
+
+features:
+  momentum_windows: [5, 10, 21, 63, 126, 252]
+  trend_windows: [10, 21, 50, 100]
+  meanrev_windows: [5, 10, 21]
+  vol_windows: [5, 10, 21, 63]
+  volume_windows: [10, 21, 63]
+  structure_windows: [21, 63, 126]
+  cross_windows: [21, 63, 126]
+  redundancy_threshold: 0.90
+  max_features: 48
+  importance_method: permutation
+
+labels:
+  horizon_bars: 15
+  tp_sigma: 2.0
+  sl_sigma: 1.5
+  vol_span: 21
+
+cv:
+  scheme: expanding
+  n_folds: 5
+  embargo_bars: 5
+  min_train_bars: 504
+  test_bars: 252
+
+model:
+  members: [hgb, rf, logistic]
+  calibration: isotonic
+  tuning_iterations: 8
+  tuning_metric: log_loss
+  store_dir: models_store
+
+regime:
+  n_states: 5
+  trend_window: 63
+  vol_window: 21
+  smoothing_halflife: 3.0
+  min_train_bars: 252
+  crash_vol_percentile: 0.95
+  crash_drawdown: -0.15
+  correction_drawdown: -0.08
+
+backtest:
+  initial_capital: 1000000.0
+  costs:
+    commission_bps: 1.0
+    spread_bps: 2.5
+    impact_coefficient: 0.10
+    borrow_bps_daily: 0.5
+  max_positions: 8
+  max_gross_exposure: 1.0
+  allow_short: false
+  execution_lag_bars: 1
+  stop_first_on_ambiguous_bar: true
+
+risk:
+  risk_per_trade_pct: 0.5
+  kelly_fraction: 0.25
+  target_annual_vol: 0.12
+  max_position_weight: 0.15
+  portfolio_heat_cap_pct: 4.0
+  correlation_penalty_threshold: 0.60
+  max_sector_weight: 0.35
+  dd_throttle_start: 0.05
+  dd_throttle_full: 0.15
+  var_confidence: 0.95
+
+signals:
+  min_probability: 0.55
+  ev_margin_bps: 5.0
+  analogue_k: 50
+  max_uncertainty: 0.25
+
+scanner:
+  top_n: 10
+
+monitor:
+  psi_alert: 0.25
+  psi_warn: 0.10
+  min_live_samples: 50
+  promotion_p_value: 0.05

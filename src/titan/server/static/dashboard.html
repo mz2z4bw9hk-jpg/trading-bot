@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TITAN — Research Dashboard</title>
+<style>
+  :root {
+    --surface-1: #fcfcfb; --plane: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-mut: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --seq-450: #2a78d6; --seq-250: #86b6ef;
+    --div-neg: #d03b3b; --div-mid: #f0efec;
+    --good: #0ca30c; --good-text: #006300; --warning: #fab219;
+    --serious: #ec835a; --critical: #d03b3b;
+    --bear-fill: #d03b3b; --crash-fill: #7a2222; --neutral-fill: #b5b3ab;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-1: #1a1a19; --plane: #0d0d0d;
+      --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-mut: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5; --seq-450: #3987e5; --seq-250: #1c5cab;
+      --div-neg: #e66767; --div-mid: #383835;
+      --good-text: #0ca30c;
+      --neutral-fill: #55544f;
+    }
+  }
+  :root[data-theme="light"] {
+    --surface-1: #fcfcfb; --plane: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-mut: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --seq-450: #2a78d6; --seq-250: #86b6ef;
+    --div-neg: #d03b3b; --div-mid: #f0efec;
+    --good-text: #006300; --neutral-fill: #b5b3ab;
+  }
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19; --plane: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-mut: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --seq-450: #3987e5; --seq-250: #1c5cab;
+    --div-neg: #e66767; --div-mid: #383835;
+    --good-text: #0ca30c; --neutral-fill: #55544f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--plane); color: var(--ink-1);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 16px; max-width: 1280px; margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  header h1 { font-size: 20px; letter-spacing: 0.04em; }
+  header .sub { color: var(--ink-2); font-size: 13px; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface-1);
+    font-size: 12px; color: var(--ink-2);
+  }
+  .pill b { color: var(--ink-1); font-weight: 600; }
+  #theme-btn {
+    margin-left: auto; cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--ink-2); border-radius: 8px;
+    padding: 4px 10px; font: inherit; font-size: 12px;
+  }
+  .disclaimer { color: var(--ink-mut); font-size: 12px; margin: 6px 0 16px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(12, 1fr); }
+  .card {
+    grid-column: span 12; background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    min-width: 0;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; color: var(--ink-2);
+             text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+  .card .note { color: var(--ink-mut); font-size: 12px; margin-top: 8px; }
+  .empty { color: var(--ink-mut); font-size: 13px; padding: 18px 0; }
+  @media (min-width: 760px) {
+    .c6 { grid-column: span 6; } .c4 { grid-column: span 4; }
+    .c8 { grid-column: span 8; } .c3 { grid-column: span 3; }
+  }
+  /* KPI tiles */
+  .kpis { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+  .kpi { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .kpi .v { font-size: 22px; font-weight: 650; }
+  .kpi .l { font-size: 11px; color: var(--ink-mut); text-transform: uppercase; letter-spacing: 0.05em; }
+  .kpi .v.up { color: var(--good-text); } .kpi .v.down { color: var(--critical); }
+  /* charts */
+  .chart { position: relative; width: 100%; }
+  .chart svg { width: 100%; height: auto; display: block; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .ticktext { fill: var(--ink-mut); font-size: 11px; }
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 50; display: none;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 9px; font-size: 12px; color: var(--ink-1);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18); max-width: 280px;
+  }
+  #tooltip .t2 { color: var(--ink-2); }
+  /* tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--ink-mut); font-weight: 500; font-size: 11px;
+       text-transform: uppercase; letter-spacing: 0.05em; padding: 4px 8px 6px 0; }
+  td { padding: 5px 8px 5px 0; border-top: 1px solid var(--grid); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll-x { overflow-x: auto; }
+  /* chips */
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; border: 1px solid var(--border); }
+  .chip.aplus, .chip.a { color: var(--good-text); border-color: var(--good-text); }
+  .chip.bplus { color: var(--warning); border-color: var(--warning); }
+  .chip.b { color: var(--ink-2); }
+  .chip.rej { color: var(--ink-mut); font-weight: 400; }
+  /* legend */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--ink-2); }
+  .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  /* signal cards */
+  .signals { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .sig { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .sig .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .sig .sym { font-size: 16px; font-weight: 700; }
+  .sig .conf { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 12px; }
+  .sig dl { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 2px 10px; font-size: 12px; margin: 8px 0; }
+  .sig dt { color: var(--ink-mut); } .sig dd { font-variant-numeric: tabular-nums; }
+  .sig ul { list-style: none; font-size: 12px; margin: 6px 0; }
+  .sig li { padding-left: 16px; position: relative; margin: 2px 0; color: var(--ink-2); }
+  .sig li.pro::before { content: "+"; position: absolute; left: 2px; color: var(--good-text); font-weight: 700; }
+  .sig li.con::before { content: "!"; position: absolute; left: 4px; color: var(--serious); font-weight: 700; }
+  .sig .reason { font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--grid); padding-top: 6px; margin-top: 6px; }
+  footer { color: var(--ink-mut); font-size: 12px; margin: 20px 0 8px; }
+  a { color: var(--series-1); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TITAN</h1>
+  <span class="sub">quantitative research dashboard</span>
+  <span class="pill" id="pill-provider">provider: —</span>
+  <span class="pill" id="pill-regime">regime: —</span>
+  <button id="theme-btn" type="button">theme</button>
+</header>
+<div class="disclaimer" id="disclaimer">Research output only — not investment advice.</div>
+
+<div class="grid">
+  <section class="card"><h2>Out-of-sample performance</h2><div class="kpis" id="kpis"><div class="empty">loading…</div></div></section>
+
+  <section class="card c8">
+    <h2>Walk-forward equity (out-of-sample, net of costs)</h2>
+    <div class="chart" id="equity-chart"><div class="empty">loading…</div></div>
+    <div class="chart" id="dd-chart"></div>
+    <div class="chart" id="regime-strip"></div>
+    <div class="legend" id="regime-legend"></div>
+  </section>
+
+  <section class="card c4">
+    <h2>Robustness</h2>
+    <div id="robustness"><div class="empty">loading…</div></div>
+    <div class="note">Block-bootstrap CIs; DSR = P(skill) after deflating for N development trials.</div>
+  </section>
+
+  <section class="card c6">
+    <h2>Signal feed — latest scan</h2>
+    <div id="scan-meta" class="note"></div>
+    <div class="signals" id="signal-cards"><div class="empty">run titan validate / scan</div></div>
+  </section>
+
+  <section class="card c6">
+    <h2>Market scanner ranking</h2>
+    <div class="scroll-x"><table id="scan-table"></table></div>
+  </section>
+
+  <section class="card c6">
+    <h2>Fold diagnostics (each fold trained only on its past)</h2>
+    <div class="chart" id="fold-chart"></div>
+    <div class="scroll-x"><table id="fold-table"></table></div>
+  </section>
+
+  <section class="card c6">
+    <h2>Feature importance (permutation, out-of-sample)</h2>
+    <div class="chart" id="importance-chart"><div class="empty">loading…</div></div>
+    <div class="note">Log-loss increase when the feature is shuffled; ≤ 0 means unused.</div>
+  </section>
+
+  <section class="card c6">
+    <h2>Correlation matrix (OOS daily returns)</h2>
+    <div class="chart" id="corr-chart"><div class="empty">loading…</div></div>
+  </section>
+
+  <section class="card c6">
+    <h2>Performance by detected regime</h2>
+    <div class="scroll-x"><table id="regime-table"></table></div>
+    <div class="note">Consistency across regimes matters more than any single number above.</div>
+  </section>
+
+  <section class="card">
+    <h2>Universe & data quality</h2>
+    <div class="scroll-x"><table id="universe-table"></table></div>
+  </section>
+</div>
+
+<div id="tooltip"></div>
+<footer id="footer"></footer>
+
+<script>
+"use strict";
+/* ---------- theme ---------- */
+const themeBtn = document.getElementById("theme-btn");
+const applyTheme = t => { if (t) document.documentElement.dataset.theme = t; };
+applyTheme(localStorage.getItem("titan-theme"));
+themeBtn.onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  localStorage.setItem("titan-theme", next); applyTheme(next);
+  render(); // re-render charts with new palette vars
+};
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/* ---------- utils ---------- */
+const $ = s => document.querySelector(s);
+const fmtPct = (v, d=1) => (v==null||isNaN(v)) ? "—" : (100*v).toFixed(d) + "%";
+const fmtNum = (v, d=2) => (v==null||isNaN(v)) ? "—" : (+v).toFixed(d);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function getJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch (e) { return null; }
+}
+const tooltip = $("#tooltip");
+function showTip(html, x, y) {
+  tooltip.innerHTML = html; tooltip.style.display = "block";
+  const pad = 12, w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+  tooltip.style.left = Math.min(x + pad, innerWidth - w - 8) + "px";
+  tooltip.style.top = Math.min(y + pad, innerHeight - h - 8) + "px";
+}
+function hideTip() { tooltip.style.display = "none"; }
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+function niceTicks(min, max, n=4) {
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min, step0 = span / n,
+    mag = Math.pow(10, Math.floor(Math.log10(step0))),
+    step = [1,2,2.5,5,10].map(m=>m*mag).find(s=>span/s<=n+1) || mag*10,
+    lo = Math.ceil(min/step)*step, ticks = [];
+  for (let v=lo; v<=max+1e-9; v+=step) ticks.push(+v.toFixed(10));
+  return ticks;
+}
+
+/* ---------- line/area chart ---------- */
+function lineChart(el, dates, values, opts={}) {
+  const W=800, H=opts.height||230, L=56, R=8, T=10, B=24;
+  el.innerHTML = "";
+  const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`, role:"img", "aria-label":opts.label||"chart"});
+  const min = opts.min ?? Math.min(...values), max = opts.max ?? Math.max(...values);
+  const x = i => L + (W-L-R) * (i/(values.length-1||1));
+  const y = v => T + (H-T-B) * (1 - (v-min)/((max-min)||1));
+  for (const t of niceTicks(min, max)) {
+    svg.appendChild(svgEl("line", {x1:L, x2:W-R, y1:y(t), y2:y(t), class:"gridline"}));
+    const txt = svgEl("text", {x:L-6, y:y(t)+4, "text-anchor":"end", class:"ticktext"});
+    txt.textContent = opts.fmt ? opts.fmt(t) : t; svg.appendChild(txt);
+  }
+  const nx = Math.min(6, dates.length);
+  for (let k=0; k<nx; k++) {
+    const i = Math.round(k*(dates.length-1)/(nx-1||1));
+    const txt = svgEl("text", {x:x(i), y:H-6, "text-anchor":"middle", class:"ticktext"});
+    txt.textContent = dates[i]; svg.appendChild(txt);
+  }
+  svg.appendChild(svgEl("line", {x1:L, x2:W-R, y1:H-B, y2:H-B, class:"axisline"}));
+  let d = "";
+  values.forEach((v,i) => { d += (i?"L":"M") + x(i).toFixed(1) + " " + y(v).toFixed(1); });
+  if (opts.fill) {
+    const dd = d + `L${x(values.length-1)} ${y(opts.fillBase??min)} L${x(0)} ${y(opts.fillBase??min)} Z`;
+    svg.appendChild(svgEl("path", {d:dd, fill:opts.color, opacity:0.16, stroke:"none"}));
+  }
+  svg.appendChild(svgEl("path", {d, fill:"none", stroke:opts.color, "stroke-width":2,
+    "stroke-linejoin":"round", "stroke-linecap":"round"}));
+  const cross = svgEl("line", {y1:T, y2:H-B, class:"axisline", visibility:"hidden", "stroke-dasharray":"3 3"});
+  const dot = svgEl("circle", {r:4, fill:opts.color, stroke:cssVar("--surface-1"), "stroke-width":2, visibility:"hidden"});
+  svg.appendChild(cross); svg.appendChild(dot);
+  svg.addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(), sx = W / r.width;
+    const px = (ev.clientX - r.left) * sx;
+    const i = Math.max(0, Math.min(values.length-1, Math.round((px-L)/((W-L-R)||1)*(values.length-1))));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility","visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(values[i])); dot.setAttribute("visibility","visible");
+    showTip(`<b>${esc(dates[i])}</b><br><span class="t2">${esc(opts.name||"value")}:</span> ${opts.fmt?opts.fmt(values[i]):values[i]}`, ev.clientX, ev.clientY);
+  });
+  svg.addEventListener("mouseleave", () => { cross.setAttribute("visibility","hidden"); dot.setAttribute("visibility","hidden"); hideTip(); });
+  el.appendChild(svg);
+}
+
+/* ---------- vertical bar chart ---------- */
+function barChart(el, labels, values, opts={}) {
+  const W=800, H=opts.height||190, L=56, R=8, T=10, B=24;
+  el.innerHTML = "";
+  const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`});
+  const min = Math.min(0, ...values, opts.min ?? 0), max = Math.max(...values, opts.max ?? 0);
+  const y = v => T + (H-T-B) * (1 - (v-min)/((max-min)||1));
+  for (const t of niceTicks(min, max)) {
+    svg.appendChild(svgEl("line", {x1:L, x2:W-R, y1:y(t), y2:y(t), class:"gridline"}));
+    const txt = svgEl("text", {x:L-6, y:y(t)+4, "text-anchor":"end", class:"ticktext"});
+    txt.textContent = opts.fmt ? opts.fmt(t) : t; svg.appendChild(txt);
+  }
+  if (opts.refline != null) {
+    svg.appendChild(svgEl("line", {x1:L, x2:W-R, y1:y(opts.refline), y2:y(opts.refline),
+      stroke:cssVar("--ink-mut"), "stroke-width":1, "stroke-dasharray":"4 4"}));
+  }
+  const n = values.length, slot = (W-L-R)/n, bw = Math.min(46, slot-2);
+  values.forEach((v,i) => {
+    const xx = L + slot*i + (slot-bw)/2, y0 = y(Math.max(0,min)), y1 = y(v);
+    const rect = svgEl("rect", {x:xx, y:Math.min(y0,y1), width:bw, height:Math.abs(y0-y1)||1,
+      fill:opts.color, rx:4});
+    rect.addEventListener("mousemove", ev =>
+      showTip(`<b>${esc(labels[i])}</b><br>${opts.fmt?opts.fmt(v):v}`, ev.clientX, ev.clientY));
+    rect.addEventListener("mouseleave", hideTip);
+    svg.appendChild(rect);
+    const txt = svgEl("text", {x:xx+bw/2, y:H-6, "text-anchor":"middle", class:"ticktext"});
+    txt.textContent = labels[i]; svg.appendChild(txt);
+  });
+  svg.appendChild(svgEl("line", {x1:L, x2:W-R, y1:H-B, y2:H-B, class:"axisline"}));
+  el.appendChild(svg);
+}
+
+/* ---------- horizontal bars (importance) ---------- */
+function hbarChart(el, labels, values, opts={}) {
+  const W=800, rowH=22, L=210, R=54, T=6;
+  const H = T + labels.length*rowH + 8;
+  el.innerHTML = "";
+  const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`});
+  const max = Math.max(...values.map(Math.abs), 1e-9);
+  const x = v => L + (W-L-R) * (v/max);
+  labels.forEach((lab,i) => {
+    const yy = T + i*rowH;
+    const txt = svgEl("text", {x:L-8, y:yy+rowH/2+4, "text-anchor":"end", class:"ticktext"});
+    txt.textContent = lab.length>28 ? lab.slice(0,27)+"…" : lab; svg.appendChild(txt);
+    const v = values[i];
+    const rect = svgEl("rect", {x:L, y:yy+4, width:Math.max(x(Math.max(v,0))-L,1), height:rowH-8,
+      fill: v>=0 ? opts.color : cssVar("--ink-mut"), rx:4});
+    rect.addEventListener("mousemove", ev => showTip(`<b>${esc(lab)}</b><br>${v.toExponential(2)}`, ev.clientX, ev.clientY));
+    rect.addEventListener("mouseleave", hideTip);
+    svg.appendChild(rect);
+    const val = svgEl("text", {x:x(Math.max(v,0))+6, y:yy+rowH/2+4, class:"ticktext"});
+    val.textContent = v.toExponential(1); svg.appendChild(val);
+  });
+  el.appendChild(svg);
+}
+
+/* ---------- regime strip ---------- */
+const REGIME_GROUP = r => {
+  if (["strong_bull","bull","weak_bull","accumulation"].includes(r)) return "bullish";
+  if (["bear","correction","distribution"].includes(r)) return "bearish";
+  if (r === "crash") return "crash";
+  return "neutral";
+};
+function regimeStrip(el, legendEl, dates, regimes) {
+  const W=800, H=26, L=56, R=8;
+  el.innerHTML = "";
+  const colors = { bullish: cssVar("--series-1"), neutral: cssVar("--neutral-fill"),
+                   bearish: cssVar("--bear-fill"), crash: cssVar("--crash-fill") };
+  const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`});
+  const n = dates.length, bw = (W-L-R)/n;
+  regimes.forEach((r,i) => {
+    const rect = svgEl("rect", {x:L+i*bw, y:4, width:Math.max(bw,0.8)+0.3, height:H-10,
+      fill: colors[REGIME_GROUP(r)]});
+    rect.addEventListener("mousemove", ev =>
+      showTip(`<b>${esc(dates[i])}</b><br>${esc(r)}`, ev.clientX, ev.clientY));
+    rect.addEventListener("mouseleave", hideTip);
+    svg.appendChild(rect);
+  });
+  el.appendChild(svg);
+  legendEl.innerHTML = Object.entries(colors).map(([k,c]) =>
+    `<span><span class="sw" style="background:${c}"></span>${k}</span>`).join("") +
+    `<span class="t2" style="color:var(--ink-mut)">detected regime (hover for detail)</span>`;
+}
+
+/* ---------- correlation heatmap ---------- */
+function heatmap(el, symbols, matrix) {
+  const n = symbols.length, cell = Math.min(44, Math.floor(560/n)), L=64, T=26;
+  const W = L + n*cell + 10, H = T + n*cell + 10;
+  el.innerHTML = "";
+  const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`});
+  const pos = cssVar("--series-1"), neg = cssVar("--div-neg"), mid = cssVar("--div-mid");
+  const mix = (a,b,t) => {
+    const pa = a.match(/\w\w/g).map(h=>parseInt(h,16)), pb = b.match(/\w\w/g).map(h=>parseInt(h,16));
+    return "#" + pa.map((v,i)=>Math.round(v+(pb[i]-v)*t).toString(16).padStart(2,"0")).join("");
+  };
+  const colorOf = v => v >= 0 ? mix(mid.length===7?mid:"#f0efec", pos, Math.min(v,1))
+                              : mix(mid.length===7?mid:"#f0efec", neg, Math.min(-v,1));
+  symbols.forEach((s,j) => {
+    const t1 = svgEl("text", {x:L+j*cell+cell/2, y:T-8, "text-anchor":"middle", class:"ticktext"});
+    t1.textContent = s; svg.appendChild(t1);
+    const t2 = svgEl("text", {x:L-8, y:T+j*cell+cell/2+4, "text-anchor":"end", class:"ticktext"});
+    t2.textContent = s; svg.appendChild(t2);
+  });
+  for (let i=0;i<n;i++) for (let j=0;j<n;j++) {
+    const v = matrix[i][j];
+    const rect = svgEl("rect", {x:L+j*cell+1, y:T+i*cell+1, width:cell-2, height:cell-2, rx:3,
+      fill: colorOf(v)});
+    rect.addEventListener("mousemove", ev =>
+      showTip(`<b>${esc(symbols[i])} × ${esc(symbols[j])}</b><br>ρ = ${v.toFixed(2)}`, ev.clientX, ev.clientY));
+    rect.addEventListener("mouseleave", hideTip);
+    svg.appendChild(rect);
+  }
+  el.appendChild(svg);
+}
+
+/* ---------- data + render ---------- */
+let DATA = {};
+async function loadAll() {
+  const [report, equity, regimes, signals, scan, importance, universe, corr, manifest, quality] =
+    await Promise.all([
+      getJSON("/api/report"), getJSON("/api/equity"), getJSON("/api/regimes"),
+      getJSON("/api/signals"), getJSON("/api/scan"), getJSON("/api/importance"),
+      getJSON("/api/universe"), getJSON("/api/correlation"), getJSON("/api/manifest"),
+      getJSON("/api/quality"),
+    ]);
+  DATA = {report, equity, regimes, signals, scan, importance, universe, corr, manifest, quality};
+  render();
+}
+
+function render() {
+  const {report, equity, regimes, signals, scan, importance, universe, corr, manifest} = DATA;
+  if (manifest) {
+    $("#pill-provider").innerHTML = `provider: <b>${esc(manifest.provider)}</b>`;
+    $("#disclaimer").textContent = manifest.disclaimer || $("#disclaimer").textContent;
+    $("#footer").textContent = `generated ${manifest.generated} · seed ${manifest.seed} · ${manifest.n_folds} folds`;
+  }
+  /* KPIs */
+  if (report) {
+    const s = report.backtest.summary;
+    const k = (label, val, cls="") => `<div class="kpi"><div class="v ${cls}">${val}</div><div class="l">${label}</div></div>`;
+    $("#kpis").innerHTML =
+      k("Sharpe (OOS)", fmtNum(s.sharpe), s.sharpe>0?"up":"down") +
+      k("CAGR", fmtPct(s.cagr), s.cagr>0?"up":"down") +
+      k("Max drawdown", fmtPct(s.max_drawdown), "down") +
+      k("Sortino", fmtNum(s.sortino)) +
+      k("Calmar", fmtNum(s.calmar)) +
+      k("Profit factor", fmtNum(s.profit_factor)) +
+      k("Expectancy/trade", fmtPct(s.expectancy,2)) +
+      k("Win rate", fmtPct(s.win_rate)) +
+      k("Trades", s.n_trades) +
+      k("Pooled AUC", fmtNum(report.pooled_auc,3)) +
+      k("Hit rate @ gate", fmtPct(report.high_conf_hit_rate)) +
+      k("Base rate", fmtPct(report.base_rate));
+  }
+  /* equity + dd + regimes */
+  if (equity) {
+    lineChart($("#equity-chart"), equity.date, equity.equity,
+      {color: cssVar("--series-1"), name:"equity", fmt:v=>"$"+(v/1e6).toFixed(2)+"M", height:240, label:"equity curve"});
+    lineChart($("#dd-chart"), equity.date, equity.drawdown,
+      {color: cssVar("--critical"), name:"drawdown", fmt:v=>fmtPct(v), height:110, fill:true, fillBase:Math.min(...equity.drawdown), max:0, label:"drawdown"});
+  }
+  if (regimes) regimeStrip($("#regime-strip"), $("#regime-legend"), regimes.date, regimes.regime);
+  /* robustness */
+  if (report) {
+    const b = report.bootstrap, d = report.dsr_sensitivity, r = report.risk_of_ruin;
+    const s = report.backtest.summary;
+    $("#robustness").innerHTML = `
+      <table>
+        <tr><td>Sharpe 5–95% CI</td><td class="num">[${b.sharpe_ci_5_95[0].toFixed(2)}, ${b.sharpe_ci_5_95[1].toFixed(2)}]</td></tr>
+        <tr><td>P(Sharpe &gt; 0)</td><td class="num">${fmtPct(b.p_sharpe_positive)}</td></tr>
+        <tr><td>CAGR 5–95% CI</td><td class="num">[${fmtPct(b.cagr_ci_5_95[0])}, ${fmtPct(b.cagr_ci_5_95[1])}]</td></tr>
+        <tr><td>MaxDD 5–95% CI</td><td class="num">[${fmtPct(b.max_dd_ci_5_95[0])}, ${fmtPct(b.max_dd_ci_5_95[1])}]</td></tr>
+        ${Object.entries(d).map(([k,v])=>`<tr><td>DSR ${esc(k)}</td><td class="num">${fmtNum(v,3)}</td></tr>`).join("")}
+        <tr><td>Risk of ruin (−30%, 3y)</td><td class="num">${r && r.risk_of_ruin!=null ? fmtPct(r.risk_of_ruin) : "—"}</td></tr>
+        <tr><td>Daily VaR 95 / CVaR 95</td><td class="num">${fmtPct(s.var_95,2)} / ${fmtPct(s.cvar_95,2)}</td></tr>
+        <tr><td>Avg gross exposure</td><td class="num">${fmtPct(s.exposure)}</td></tr>
+      </table>`;
+  }
+  /* scanner */
+  if (scan) {
+    $("#pill-regime").innerHTML = `regime: <b>${esc(scan.regime.regime)}</b> (${fmtPct(scan.regime.confidence,0)})`;
+    $("#scan-meta").textContent = `scan date ${scan.date} · volatility ${scan.regime.vol_state.replace("_"," ")}`;
+    const gradeCls = g => ({"A+":"aplus","A":"a","B+":"bplus","B":"b"}[g]||"rej");
+    $("#scan-table").innerHTML = `
+      <tr><th class="num">#</th><th>Symbol</th><th class="num">P(hit)</th><th class="num">Disagree</th><th>Status</th></tr>` +
+      scan.rows.map(r => `<tr>
+        <td class="num">${r.rank}</td><td><b>${esc(r.symbol)}</b></td>
+        <td class="num">${fmtPct(r.probability)}</td><td class="num">${fmtNum(r.uncertainty,3)}</td>
+        <td>${r.status==="signal"
+            ? `<span class="chip ${gradeCls(r.grade)}">${esc(r.grade)}</span> <span class="t2">conf ${r.confidence.toFixed(0)}</span>`
+            : `<span class="chip rej">${esc(r.status)}</span>`}</td>
+      </tr>`).join("");
+    const cards = (scan.signals||[]).map(s => `
+      <div class="sig">
+        <div class="head"><span class="sym">${esc(s.symbol)}</span>
+          <span class="chip ${gradeCls(s.trade_grade)}">${esc(s.trade_grade)}</span>
+          <span class="chip">${esc(s.market_regime)}</span>
+          <span class="conf">conf ${s.confidence_score.toFixed(0)} · P ${fmtPct(s.probability)}</span></div>
+        <dl>
+          <dt>Entry zone</dt><dd>${s.entry_zone[0].toFixed(2)}–${s.entry_zone[1].toFixed(2)}</dd>
+          <dt>Limit / mkt</dt><dd>${s.optimal_limit_entry.toFixed(2)} / ${s.market_entry.toFixed(2)}</dd>
+          <dt>Stop / ATR stop</dt><dd>${s.stop_loss.toFixed(2)} / ${s.atr_stop.toFixed(2)}</dd>
+          <dt>Targets</dt><dd>${s.take_profit_levels.map(t=>t.toFixed(2)).join(" · ")}</dd>
+          <dt>Size / risk</dt><dd>${fmtPct(s.position_size_fraction)} / ${s.risk_percentage.toFixed(2)}%</dd>
+          <dt>R:R / EV</dt><dd>${s.risk_reward.toFixed(2)} / ${fmtPct(s.ev_after_costs,2)}</dd>
+          <dt>Est. hold</dt><dd>${s.expected_holding_bars.toFixed(0)} bars</dd>
+          <dt>MAE / MFE est.</dt><dd>${fmtPct(s.mae_estimate)} / ${fmtPct(s.mfe_estimate)}</dd>
+          <dt>Similarity</dt><dd>${fmtPct(s.historical_similarity,0)} (${s.n_analogues} analogues)</dd>
+          <dt>Institutional</dt><dd>${s.institutional_score.toFixed(0)}/100</dd>
+        </dl>
+        <ul>${s.supporting_evidence.slice(0,3).map(e=>`<li class="pro">${esc(e)}</li>`).join("")}
+            ${s.conflicting_evidence.slice(0,2).map(e=>`<li class="con">${esc(e)}</li>`).join("")}</ul>
+        <div class="reason">${esc(s.reasoning)}</div>
+      </div>`).join("");
+    $("#signal-cards").innerHTML = cards || `<div class="empty">no signal cleared the adaptive gate on the last bar — that is the gate working, not a bug.</div>`;
+  }
+  /* folds */
+  if (report) {
+    const f = report.folds;
+    barChart($("#fold-chart"), f.map(x=>"fold "+x.fold), f.map(x=>x.auc),
+      {color: cssVar("--series-1"), refline:0.5, fmt:v=>v.toFixed(2), min:0.4, max:0.7, height:170});
+    $("#fold-table").innerHTML = `
+      <tr><th>Fold</th><th>Test window</th><th class="num">AUC</th><th class="num">Brier</th><th class="num">Signals</th><th class="num">Features</th></tr>` +
+      f.map(x=>`<tr><td>${x.fold}</td><td>${esc(x.test_start)} → ${esc(x.test_end)}</td>
+        <td class="num">${fmtNum(x.auc,3)}</td><td class="num">${fmtNum(x.brier,3)}</td>
+        <td class="num">${x.n_signals}</td><td class="num">${x.n_features}</td></tr>`).join("");
+  }
+  /* importance */
+  if (importance) {
+    const entries = Object.entries(importance).slice(0,15);
+    hbarChart($("#importance-chart"), entries.map(e=>e[0]), entries.map(e=>+e[1]),
+      {color: cssVar("--seq-450")});
+  }
+  /* correlation */
+  if (corr) heatmap($("#corr-chart"), corr.symbols, corr.matrix);
+  /* regime breakdown */
+  if (report) {
+    const rb = report.regime_breakdown || {};
+    $("#regime-table").innerHTML = `
+      <tr><th>Regime</th><th class="num">Days</th><th class="num">Ann. return</th><th class="num">Sharpe</th></tr>` +
+      Object.entries(rb).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${v.days}</td>
+        <td class="num">${fmtPct(v.ann_return)}</td><td class="num">${fmtNum(v.sharpe)}</td></tr>`).join("") ||
+      `<tr><td class="empty">no data</td></tr>`;
+  }
+  /* universe */
+  if (DATA.universe && DATA.quality) {
+    const rel = DATA.universe.reliability || {};
+    const rows = Object.entries(DATA.quality).map(([sym,q]) => `
+      <tr><td><b>${esc(sym)}</b></td><td class="num">${q.n_bars}</td>
+      <td class="num">${fmtNum(q.reliability,3)}</td>
+      <td>${(q.issues||[]).slice(0,2).map(esc).join("; ") || "clean"}</td></tr>`).join("");
+    $("#universe-table").innerHTML =
+      `<tr><th>Symbol</th><th class="num">Bars</th><th class="num">Reliability</th><th>Issues</th></tr>` + rows;
+  }
+}
+loadAll();
+</script>
+</body>
+</html>

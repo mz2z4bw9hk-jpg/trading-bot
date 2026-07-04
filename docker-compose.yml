@@ -1,0 +1,21 @@
+services:
+  # One-shot research run: walk-forward validation + scan -> ./artifacts
+  research:
+    build: .
+    command: ["validate", "--config", "configs/default.yaml", "--out", "artifacts"]
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./data_cache:/app/data_cache
+      - ./models_store:/app/models_store
+      - ./configs:/app/configs:ro
+
+  # Dashboard over the artifacts produced by the research service.
+  dashboard:
+    build: .
+    ports:
+      - "8321:8321"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    depends_on:
+      research:
+        condition: service_completed_successfully

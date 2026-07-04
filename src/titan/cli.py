@@ -1,0 +1,271 @@
+"""TITAN command-line interface.
+
+Commands
+--------
+- ``titan validate``  full walk-forward validation; writes artifacts; saves the
+  final-fold model bundle to the registry and runs the champion/challenger
+  promotion gate against any existing production model.
+- ``titan scan``      rank the universe on the latest bar with the production
+  bundle; writes scan artifacts.
+- ``titan dashboard`` serve the dashboard + JSON API over the artifacts dir.
+- ``titan info``      show config, registry and artifact status.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from titan import __version__
+from titan.core.config import TitanConfig, load_config
+from titan.core.log import configure_logging, get_logger
+
+logger = get_logger(__name__)
+
+DEFAULT_CONFIG = Path("configs/default.yaml")
+
+
+def _load_cfg(args: argparse.Namespace) -> TitanConfig:
+    path = Path(args.config) if args.config else (DEFAULT_CONFIG if DEFAULT_CONFIG.exists() else None)
+    overrides: dict = {}
+    if getattr(args, "folds", None):
+        overrides.setdefault("cv", {})["n_folds"] = args.folds
+    if getattr(args, "tuning", None) is not None:
+        overrides.setdefault("model", {})["tuning_iterations"] = args.tuning
+    cfg = load_config(path, overrides)
+    configure_logging(cfg.run.log_level)
+    return cfg
+
+
+# --------------------------------------------------------------------- #
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    from titan.artifacts import write_scan_artifacts, write_walkforward_artifacts
+    from titan.backtest.costs import CostModel
+    from titan.backtest.walkforward import WalkForwardRunner
+    from titan.data.store import MarketDataStore
+    from titan.features.pipeline import FeatureMatrixBuilder
+    from titan.models.registry import ModelRegistry
+    from titan.monitor.compare import compare_returns, promotion_gate
+    from titan.regime.detector import RegimeDetector
+    from titan.scanner.scanner import MarketScanner
+    from titan.signals.generator import SignalGenerator
+
+    cfg = _load_cfg(args)
+    out_dir = Path(args.out or cfg.run.artifacts_dir)
+
+    logger.info("TITAN validate: provider=%s seed=%d", cfg.data.provider, cfg.run.seed)
+    dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
+    builder = FeatureMatrixBuilder(cfg.features)
+    panel = builder.build(dataset)
+
+    runner = WalkForwardRunner(cfg)
+    report = runner.run(dataset, panel=panel)
+    write_walkforward_artifacts(out_dir, cfg, dataset, report)
+
+    # ---- model registry + promotion gate ------------------------------
+    registry = ModelRegistry(cfg.model.store_dir)
+    artifacts = runner.last_fold_artifacts
+    oos_returns = report.backtest.returns
+    bundle = {
+        "ensemble": artifacts["ensemble"],
+        "selected": artifacts["selected"],
+        "explainer": artifacts["explainer"],
+        "analogues": artifacts["analogues"],
+        "oos_returns": oos_returns,
+    }
+    summary = report.backtest.summary.to_dict()
+    metrics = {
+        "pooled_auc": report.pooled_auc,
+        "pooled_brier": report.pooled_brier,
+        "sharpe": summary["sharpe"],
+        "max_drawdown": summary["max_drawdown"],
+        "n_signals": len(report.signals),
+    }
+    version = registry.save(
+        bundle,
+        metrics=metrics,
+        feature_names=artifacts["selected"],
+        description=f"walk-forward {len(report.folds)} folds on {cfg.data.provider}",
+        train_start=str(report.folds[0].test_start) if report.folds else "",
+        train_end=str(report.folds[-1].test_end) if report.folds else "",
+    )
+
+    production = registry.production_version()
+    if production is None:
+        registry.promote(version)
+        logger.info("no production model existed; %s promoted", version)
+    else:
+        prod_bundle, prod_manifest = registry.load(production)
+        comparison = compare_returns(oos_returns, prod_bundle["oos_returns"], seed=cfg.run.seed)
+        approved, reasons = promotion_gate(
+            comparison, metrics, prod_manifest.metrics,
+            p_value_required=cfg.monitor.promotion_p_value,
+        )
+        if approved:
+            registry.promote(version)
+        else:
+            logger.info("challenger %s NOT promoted: %s", version, "; ".join(reasons))
+
+    # ---- scan with the freshly validated bundle ------------------------
+    cost_model = CostModel(cfg.backtest.costs)
+    generator = SignalGenerator(cfg.signals, cfg.labels, cfg.risk, cost_model,
+                                cfg.backtest.max_positions)
+    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed)
+    bench = dataset.benchmark_frame
+    detector.fit(bench.iloc[: max(len(bench) - 63, cfg.regime.min_train_bars)])
+    scanner = MarketScanner(
+        cfg,
+        ensemble=artifacts["ensemble"],
+        selected_features=artifacts["selected"],
+        generator=generator,
+        detector=detector,
+        explainer=artifacts["explainer"],
+        analogues=artifacts["analogues"],
+    )
+    scan = scanner.scan(dataset, panel)
+    write_scan_artifacts(out_dir, scan)
+
+    s = report.backtest.summary
+    print(json.dumps({
+        "pooled_auc": round(report.pooled_auc, 4),
+        "high_conf_hit_rate": round(report.high_conf_hit_rate, 4),
+        "base_rate": round(report.base_rate, 4),
+        "oos_sharpe": round(s.sharpe, 3),
+        "oos_max_drawdown": round(s.max_drawdown, 4),
+        "oos_cagr": round(s.cagr, 4),
+        "n_trades": s.n_trades,
+        "bootstrap_sharpe_ci": [round(v, 3) for v in report.bootstrap.sharpe_ci],
+        "model_version": version,
+        "artifacts": str(out_dir.resolve()),
+    }, indent=1))
+    return 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    from titan.artifacts import write_scan_artifacts
+    from titan.backtest.costs import CostModel
+    from titan.data.store import MarketDataStore
+    from titan.features.pipeline import FeatureMatrixBuilder
+    from titan.models.registry import ModelRegistry
+    from titan.regime.detector import RegimeDetector
+    from titan.scanner.scanner import MarketScanner
+    from titan.signals.generator import SignalGenerator
+
+    cfg = _load_cfg(args)
+    registry = ModelRegistry(cfg.model.store_dir)
+    try:
+        bundle, manifest = registry.load(None)
+    except LookupError:
+        print("no production model: run `titan validate` first", file=sys.stderr)
+        return 2
+    logger.info("scanning with production model %s", manifest.version)
+
+    dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
+    panel = FeatureMatrixBuilder(cfg.features).build(dataset)
+    generator = SignalGenerator(
+        cfg.signals, cfg.labels, cfg.risk, CostModel(cfg.backtest.costs),
+        cfg.backtest.max_positions,
+    )
+    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed)
+    bench = dataset.benchmark_frame
+    detector.fit(bench.iloc[: max(len(bench) - 63, cfg.regime.min_train_bars)])
+    scanner = MarketScanner(
+        cfg,
+        ensemble=bundle["ensemble"],
+        selected_features=bundle["selected"],
+        generator=generator,
+        detector=detector,
+        explainer=bundle["explainer"],
+        analogues=bundle["analogues"],
+    )
+    scan = scanner.scan(dataset, panel)
+    out = write_scan_artifacts(Path(args.out or cfg.run.artifacts_dir), scan)
+    print(json.dumps({
+        "date": str(scan.date.date()),
+        "regime": scan.regime.regime.value,
+        "n_signals": len(scan.signals),
+        "top": [
+            {"symbol": s.symbol, "grade": s.trade_grade.value,
+             "confidence": round(s.confidence_score, 1)}
+            for s in scan.signals[:5]
+        ],
+        "artifacts": str(out.resolve()),
+    }, indent=1))
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from titan.server.app import create_app
+
+    cfg = _load_cfg(args)
+    artifacts_dir = Path(args.artifacts or cfg.run.artifacts_dir)
+    app = create_app(artifacts_dir)
+    logger.info("dashboard on http://%s:%d (artifacts: %s)", args.host, args.port, artifacts_dir)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    from titan.models.registry import ModelRegistry
+
+    cfg = _load_cfg(args)
+    registry = ModelRegistry(cfg.model.store_dir)
+    print(json.dumps({
+        "version": __version__,
+        "provider": cfg.data.provider,
+        "universe": [i.symbol for i in cfg.universe.instruments],
+        "benchmark": cfg.universe.benchmark,
+        "models": [m.to_dict() for m in registry.history()],
+        "production": registry.production_version(),
+        "artifacts_dir": str(Path(cfg.run.artifacts_dir).resolve()),
+    }, indent=1, default=str))
+    return 0
+
+
+# --------------------------------------------------------------------- #
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="titan",
+        description="PROJECT TITAN — quantitative research platform",
+    )
+    parser.add_argument("--version", action="version", version=f"titan {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_val = sub.add_parser("validate", help="run walk-forward validation and write artifacts")
+    p_val.add_argument("--config", help="YAML config path")
+    p_val.add_argument("--out", help="artifacts output dir")
+    p_val.add_argument("--folds", type=int, help="override cv.n_folds")
+    p_val.add_argument("--tuning", type=int, help="override model.tuning_iterations")
+    p_val.set_defaults(func=cmd_validate)
+
+    p_scan = sub.add_parser("scan", help="scan the universe with the production model")
+    p_scan.add_argument("--config", help="YAML config path")
+    p_scan.add_argument("--out", help="artifacts output dir")
+    p_scan.set_defaults(func=cmd_scan)
+
+    p_dash = sub.add_parser("dashboard", help="serve the dashboard")
+    p_dash.add_argument("--config", help="YAML config path")
+    p_dash.add_argument("--artifacts", help="artifacts dir to serve")
+    p_dash.add_argument("--host", default="127.0.0.1")
+    p_dash.add_argument("--port", type=int, default=8321)
+    p_dash.set_defaults(func=cmd_dashboard)
+
+    p_info = sub.add_parser("info", help="show platform status")
+    p_info.add_argument("--config", help="YAML config path")
+    p_info.set_defaults(func=cmd_info)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

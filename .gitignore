@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# TITAN runtime state (never commit market data, models or run artifacts)
+artifacts/
+data_cache/
+models_store/
+*.parquet
+*.joblib
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+artifacts_run.log
+control_run.log

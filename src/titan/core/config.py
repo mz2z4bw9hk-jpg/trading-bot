@@ -1,0 +1,212 @@
+"""Typed configuration for the whole platform.
+
+Every component receives its own config object (dependency injection); nothing
+reads global state. Configs are loaded from YAML and validated by pydantic, so
+a malformed research config fails loudly at startup instead of silently
+producing garbage research.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, Field, field_validator
+
+
+class RunConfig(BaseModel):
+    seed: int = 7
+    artifacts_dir: Path = Path("artifacts")
+    log_level: str = "INFO"
+
+
+class DataConfig(BaseModel):
+    provider: Literal["synthetic", "yahoo", "csv"] = "synthetic"
+    cache_dir: Path = Path("data_cache")
+    bars: int = 2000
+    min_history_bars: int = 420
+    min_reliability: float = Field(0.70, ge=0.0, le=1.0)
+    max_forward_fill: int = 2
+    csv_dir: Path | None = None
+    # Synthetic provider only: innovation scale of the planted AR(1) drift.
+    # None uses the generator default (realistically weak). Larger values are
+    # for control experiments: the pipeline MUST detect strong planted signal.
+    synthetic_drift_sigma: float | None = Field(None, gt=0)
+
+
+class UniverseItem(BaseModel):
+    symbol: str
+    asset_class: str = "equity"
+    sector: str = "unknown"
+
+
+class UniverseConfig(BaseModel):
+    name: str = "default"
+    benchmark: str = "INDEX"
+    instruments: list[UniverseItem] = Field(default_factory=list)
+
+
+class FeatureConfig(BaseModel):
+    momentum_windows: list[int] = Field(default_factory=lambda: [5, 10, 21, 63, 126, 252])
+    trend_windows: list[int] = Field(default_factory=lambda: [10, 21, 50, 100])
+    meanrev_windows: list[int] = Field(default_factory=lambda: [5, 10, 21])
+    vol_windows: list[int] = Field(default_factory=lambda: [5, 10, 21, 63])
+    volume_windows: list[int] = Field(default_factory=lambda: [10, 21, 63])
+    structure_windows: list[int] = Field(default_factory=lambda: [21, 63, 126])
+    cross_windows: list[int] = Field(default_factory=lambda: [21, 63, 126])
+    redundancy_threshold: float = Field(0.90, ge=0.5, le=1.0)
+    max_features: int = 48
+    importance_method: Literal["permutation", "model"] = "permutation"
+    min_periods_fraction: float = Field(0.8, gt=0.0, le=1.0)
+
+
+class LabelConfig(BaseModel):
+    horizon_bars: int = 15
+    tp_sigma: float = Field(2.0, gt=0)
+    sl_sigma: float = Field(1.5, gt=0)
+    vol_span: int = 21
+    min_vol_floor: float = 1e-4
+
+
+class CVConfig(BaseModel):
+    scheme: Literal["expanding", "rolling"] = "expanding"
+    n_folds: int = Field(5, ge=2)
+    embargo_bars: int = 5
+    min_train_bars: int = 252
+    test_bars: int = 126
+
+
+class ModelConfig(BaseModel):
+    members: list[Literal["hgb", "rf", "logistic"]] = Field(
+        default_factory=lambda: ["hgb", "rf", "logistic"]
+    )
+    calibration: Literal["isotonic", "sigmoid"] = "isotonic"
+    tuning_iterations: int = Field(10, ge=0)
+    tuning_metric: Literal["log_loss", "auc"] = "log_loss"
+    store_dir: Path = Path("models_store")
+    max_train_rows: int = 250_000
+
+
+class RegimeConfig(BaseModel):
+    n_states: int = Field(4, ge=2, le=8)
+    trend_window: int = 63
+    vol_window: int = 21
+    smoothing_halflife: float = Field(3.0, gt=0)
+    min_train_bars: int = 252
+    crash_vol_percentile: float = Field(0.95, gt=0.5, lt=1.0)
+    crash_drawdown: float = Field(-0.15, lt=0)
+    correction_drawdown: float = Field(-0.08, lt=0)
+
+
+class CostConfig(BaseModel):
+    commission_bps: float = Field(1.0, ge=0)
+    spread_bps: float = Field(2.5, ge=0)
+    impact_coefficient: float = Field(0.10, ge=0)
+    borrow_bps_daily: float = Field(0.5, ge=0)
+
+
+class BacktestConfig(BaseModel):
+    initial_capital: float = Field(1_000_000.0, gt=0)
+    costs: CostConfig = Field(default_factory=CostConfig)
+    max_positions: int = Field(10, ge=1)
+    max_gross_exposure: float = Field(1.0, gt=0)
+    allow_short: bool = False
+    execution_lag_bars: int = Field(1, ge=1)  # decide at close t, execute at open t+lag
+    stop_first_on_ambiguous_bar: bool = True  # pessimistic intrabar assumption
+
+
+class RiskConfig(BaseModel):
+    risk_per_trade_pct: float = Field(0.5, gt=0, le=5.0)  # percent of equity at stop
+    kelly_fraction: float = Field(0.25, gt=0, le=1.0)
+    target_annual_vol: float = Field(0.12, gt=0)
+    max_position_weight: float = Field(0.15, gt=0, le=1.0)
+    portfolio_heat_cap_pct: float = Field(4.0, gt=0)  # sum of open risk, % of equity
+    correlation_penalty_threshold: float = Field(0.60, ge=0, le=1.0)
+    max_sector_weight: float = Field(0.35, gt=0, le=1.0)
+    dd_throttle_start: float = Field(0.05, gt=0)
+    dd_throttle_full: float = Field(0.15, gt=0)
+    var_confidence: float = Field(0.95, gt=0.5, lt=1.0)
+    regime_multipliers: dict[str, float] = Field(
+        default_factory=lambda: {
+            "strong_bull": 1.00,
+            "bull": 1.00,
+            "weak_bull": 0.80,
+            "accumulation": 0.80,
+            "range": 0.60,
+            "distribution": 0.45,
+            "correction": 0.40,
+            "bear": 0.30,
+            "crash": 0.0,
+        }
+    )
+
+
+class SignalConfig(BaseModel):
+    min_probability: float = Field(0.55, gt=0.5, lt=1.0)
+    ev_margin_bps: float = Field(5.0, ge=0)
+    analogue_k: int = Field(50, ge=10)
+    max_uncertainty: float = Field(0.25, gt=0)
+    grade_thresholds: dict[str, float] = Field(
+        default_factory=lambda: {"A+": 85.0, "A": 75.0, "B+": 65.0, "B": 55.0}
+    )
+
+
+class ScannerConfig(BaseModel):
+    top_n: int = Field(10, ge=1)
+
+
+class MonitorConfig(BaseModel):
+    psi_alert: float = Field(0.25, gt=0)
+    psi_warn: float = Field(0.10, gt=0)
+    min_live_samples: int = Field(50, ge=10)
+    promotion_p_value: float = Field(0.05, gt=0, lt=0.5)
+
+
+class TitanConfig(BaseModel):
+    """Root configuration object injected throughout the platform."""
+
+    run: RunConfig = Field(default_factory=RunConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
+    universe: UniverseConfig = Field(default_factory=UniverseConfig)
+    features: FeatureConfig = Field(default_factory=FeatureConfig)
+    labels: LabelConfig = Field(default_factory=LabelConfig)
+    cv: CVConfig = Field(default_factory=CVConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    regime: RegimeConfig = Field(default_factory=RegimeConfig)
+    backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    risk: RiskConfig = Field(default_factory=RiskConfig)
+    signals: SignalConfig = Field(default_factory=SignalConfig)
+    scanner: ScannerConfig = Field(default_factory=ScannerConfig)
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
+
+    @field_validator("labels")
+    @classmethod
+    def _label_barriers_sane(cls, v: LabelConfig) -> LabelConfig:
+        if v.horizon_bars < 2:
+            raise ValueError("label horizon must be >= 2 bars")
+        return v
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> TitanConfig:
+    """Load configuration from YAML, applying optional dict overrides on top."""
+    raw: dict[str, Any] = {}
+    if path is not None:
+        text = Path(path).read_text()
+        loaded = yaml.safe_load(text) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Config root must be a mapping, got {type(loaded)}")
+        raw = loaded
+    if overrides:
+        raw = _deep_merge(raw, overrides)
+    return TitanConfig.model_validate(raw)

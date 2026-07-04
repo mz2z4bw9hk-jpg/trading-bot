@@ -1,0 +1,44 @@
+# CONTROL EXPERIMENT: synthetic market with a STRONG planted signal.
+#
+# Purpose: positive control for the whole pipeline. On this config the
+# platform MUST find edge (planted AR(1) drift, ~3x the realistic default),
+# produce signals, and show positive out-of-sample statistics. Contrast with
+# configs/default.yaml (realistically weak market), where the correct outcome
+# is few trades and a rejection verdict per docs/VALIDATION.md.
+#
+# The negative control lives in the test suite: on shuffled labels the
+# ensemble is pinned to AUC ~0.5 (tests/test_ensemble.py).
+#
+#   titan validate --config configs/control-strong-signal.yaml
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+
+data:
+  provider: synthetic
+  bars: 2500
+  synthetic_drift_sigma: 0.0008
+
+universe:
+  name: titan-control
+  benchmark: INDEX
+  instruments:
+    - { symbol: AAA, asset_class: equity, sector: technology }
+    - { symbol: BBB, asset_class: equity, sector: technology }
+    - { symbol: CCC, asset_class: equity, sector: financials }
+    - { symbol: DDD, asset_class: equity, sector: financials }
+    - { symbol: EEE, asset_class: equity, sector: energy }
+    - { symbol: FFF, asset_class: equity, sector: energy }
+    - { symbol: GGG, asset_class: equity, sector: healthcare }
+    - { symbol: HHH, asset_class: equity, sector: healthcare }
+    - { symbol: III, asset_class: etf, sector: broad }
+    - { symbol: JJJ, asset_class: crypto, sector: crypto }
+
+cv:
+  n_folds: 4
+  min_train_bars: 504
+  test_bars: 252
+
+model:
+  tuning_iterations: 2
