@@ -77,13 +77,19 @@ class CVConfig(BaseModel):
     test_bars: int = 126
 
 
+MemberName = Literal["hgb", "rf", "logistic"]
+
+
+def _default_members() -> list[MemberName]:
+    return ["hgb", "rf", "logistic"]
+
+
 class ModelConfig(BaseModel):
-    members: list[Literal["hgb", "rf", "logistic"]] = Field(
-        default_factory=lambda: ["hgb", "rf", "logistic"]
-    )
+    members: list[MemberName] = Field(default_factory=_default_members)
     calibration: Literal["isotonic", "sigmoid"] = "isotonic"
     tuning_iterations: int = Field(10, ge=0)
     tuning_metric: Literal["log_loss", "auc"] = "log_loss"
+    internal_folds: int = Field(3, ge=2)  # purged OOF folds inside each train window
     store_dir: Path = Path("models_store")
     max_train_rows: int = 250_000
 

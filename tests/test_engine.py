@@ -150,3 +150,53 @@ def test_execution_is_next_bar_never_same_bar():
     # bar-0 high of 150 (> tp) must NOT fill: entry only happens at bar 1 open=110
     assert t.entry_date == frame.index[1]
     assert t.entry_price == pytest.approx(110 * 1.001)
+
+
+def test_stop_live_on_entry_bar():
+    """Labels count barrier touches from the entry bar; the engine must too."""
+    frame = _frame([
+        (100, 101, 99, 100),
+        (100, 101, 94, 96),    # entry at open 100; low 94 pierces the 95 stop same bar
+        (96, 97, 95, 96),
+    ])
+    cfg = _cfg()
+    engine = BacktestEngine(cfg, CostModel(cfg.costs))
+    plan = TradePlan(symbol="X", decision_date=frame.index[0], size_fraction=0.2,
+                     stop_price=95.0, tp_price=120.0, max_holding_bars=5, entry_ref=100.0)
+    result = engine.run({"X": frame}, [plan])
+    t = result.trades[0]
+    assert t.exit_reason == "stop"
+    assert t.entry_date == t.exit_date == frame.index[1]
+    assert t.bars_held == 0
+    assert t.exit_price == pytest.approx(95.0 * 0.999)
+
+
+def test_gap_past_level_invalidates_entry():
+    """If the open already sits beyond stop or target, the plan is stale: no fill."""
+    frame = _frame([
+        (100, 101, 99, 100),
+        (94, 95, 93, 94),      # opens below the 95 stop -> plan invalidated
+        (94, 95, 93, 94),
+    ])
+    cfg = _cfg()
+    engine = BacktestEngine(cfg, CostModel(cfg.costs))
+    plan = TradePlan(symbol="X", decision_date=frame.index[0], size_fraction=0.2,
+                     stop_price=95.0, tp_price=120.0, max_holding_bars=5, entry_ref=100.0)
+    result = engine.run({"X": frame}, [plan])
+    assert result.trades == []
+    assert result.n_rejected == 1
+
+
+def test_capacity_goes_to_highest_priority():
+    """With one slot and two same-day plans, the higher-priority plan must fill."""
+    base = _frame([(100, 101, 99, 100)] * 5)
+    frames = {"AAA": base.copy(), "ZZZ": base.copy()}
+    mk = lambda sym, prio: TradePlan(  # noqa: E731
+        symbol=sym, decision_date=base.index[0], size_fraction=0.1,
+        stop_price=90, tp_price=120, max_holding_bars=3, entry_ref=100, priority=prio)
+    cfg = _cfg(max_positions=1)
+    engine = BacktestEngine(cfg, CostModel(cfg.costs))
+    # AAA sorts first alphabetically but ZZZ carries higher priority
+    result = engine.run(frames, [mk("AAA", 10.0), mk("ZZZ", 90.0)])
+    assert len(result.trades) == 1
+    assert result.trades[0].symbol == "ZZZ"

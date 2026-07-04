@@ -20,6 +20,7 @@ in the report ever saw its own training data.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -123,6 +124,9 @@ class WalkForwardReport:
 class WalkForwardRunner:
     def __init__(self, cfg: TitanConfig) -> None:
         self._cfg = cfg
+        # Final-fold artifacts (ensemble/selected/explainer/analogues), stashed
+        # by run() so the scanner can reuse the freshest model without refitting.
+        self.last_fold_artifacts: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
 
@@ -200,7 +204,10 @@ class WalkForwardRunner:
 
             selected = self._select_features(Xtr, ytr, seed)
             ensemble = CalibratedEnsemble(cfg.model, cfg.labels.horizon_bars, seed=seed)
-            ensemble.fit(Xtr[selected], ytr, dates[fold.train_idx], wtr)
+            ensemble.fit(
+                Xtr[selected], ytr, dates[fold.train_idx], wtr,
+                t1=lab["t1"].iloc[fold.train_idx],
+            )
 
             p_te = ensemble.predict_proba(Xte[selected])[:, 1]
             unc_te = ensemble.uncertainty(Xte[selected])
@@ -283,6 +290,7 @@ class WalkForwardRunner:
                         tp_price=signal.take_profit_levels[1],
                         max_holding_bars=cfg.labels.horizon_bars,
                         entry_ref=signal.market_entry,
+                        priority=signal.confidence_score,
                         tag=f"{signal.trade_grade.value}|f{fold.fold}",
                     )
                 )

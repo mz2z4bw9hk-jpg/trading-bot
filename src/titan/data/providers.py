@@ -48,8 +48,12 @@ class SyntheticProvider:
         drift_sigma: float | None = None,
     ) -> None:
         self._benchmark = benchmark
-        kwargs = {} if drift_sigma is None else {"drift_sigma": drift_sigma}
-        market = SyntheticMarket(symbols=list(symbols), bars=bars, seed=seed, **kwargs)
+        if drift_sigma is None:
+            market = SyntheticMarket(symbols=list(symbols), bars=bars, seed=seed)
+        else:
+            market = SyntheticMarket(
+                symbols=list(symbols), bars=bars, seed=seed, drift_sigma=drift_sigma
+            )
         self._result: SyntheticResult = market.generate()
 
     @property

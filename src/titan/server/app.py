@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 _STATIC = Path(__file__).parent / "static"
 _MAX_POINTS = 1500
@@ -104,5 +104,14 @@ def create_app(artifacts_dir: str | Path) -> FastAPI:
         if not page.exists():
             raise HTTPException(status_code=500, detail="dashboard.html missing from package")
         return page.read_text()
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            '<rect width="16" height="16" rx="3" fill="#2a78d6"/>'
+            '<path d="M3 5h10M8 5v7" stroke="#fff" stroke-width="2"/></svg>'
+        )
+        return Response(content=svg, media_type="image/svg+xml")
 
     return app

@@ -7,16 +7,22 @@ ways, and the disagreement itself is a usable uncertainty estimate.
 Fitting protocol (all inside the *training* window of an outer fold — the
 outer walk-forward never sees any of this):
 
-1. Split train into fit / calibration parts by date, separated by a purge gap
-   of one label horizon so calibration events cannot overlap fit events.
-2. Random-search each member's hyperparameters on the fit part, scored on the
-   calibration part (random search is a strong baseline — Bergstra & Bengio
-   2012; the interface accepts any sampler, so Bayesian optimization can be
-   plugged in without touching callers).
-3. Weight members by exponentiated negative calibration log-loss.
-4. Fit an isotonic (or Platt) calibrator on the weighted ensemble's
-   calibration-part probabilities. Raw scores of boosted trees are *not*
+1. Build K purged, forward-chaining internal folds over the training window
+   (events whose life overlaps an internal test block are excluded from its
+   training block, using real event end-times when provided).
+2. Random-search each member's hyperparameters on the LAST internal fold —
+   the one with the most history (random search is a strong baseline —
+   Bergstra & Bengio 2012; the sampler is the seam where Bayesian
+   optimization plugs in without touching callers).
+3. Collect OUT-OF-FOLD predictions for every member across all internal
+   folds. Member weights come from exponentiated negative pooled-OOF
+   log-loss, and the isotonic (or Platt) calibrator is fit on the pooled
+   OOF ensemble probabilities — so calibration sees several market regimes,
+   not just the tail of the window. Raw scores of boosted trees are *not*
    probabilities; position sizing needs calibrated ones.
+4. Refit every member on the FULL training window with its chosen
+   hyperparameters. The deployed members waste no data; the calibrator and
+   weights were learned strictly out-of-fold.
 
 ``predict_proba`` returns calibrated P(take-profit before stop); ``uncertainty``
 returns member disagreement (std of member probabilities).
@@ -43,7 +49,6 @@ from titan.models.cv import to_naive_utc
 
 logger = get_logger(__name__)
 
-_CALIB_FRACTION = 0.2
 _MIN_CALIB_ROWS_ISOTONIC = 300
 _WEIGHT_TEMPERATURE = 0.02  # log-loss units; smaller = sharper member weighting
 
@@ -72,12 +77,13 @@ def _sample_params(member: str, rng: np.random.Generator) -> dict[str, Any]:
 
 
 def _default_params(member: str) -> dict[str, Any]:
-    return {
+    table: dict[str, dict[str, Any]] = {
         "hgb": {"max_iter": 200, "learning_rate": 0.08, "max_leaf_nodes": 31,
                 "min_samples_leaf": 50, "l2_regularization": 0.1},
         "rf": {"n_estimators": 200, "max_depth": 6, "min_samples_leaf": 50, "max_features": "sqrt"},
         "logistic": {"C": 1.0},
-    }[member]
+    }
+    return table[member]
 
 
 def _build_member(member: str, params: dict[str, Any], seed: int):
@@ -164,16 +170,45 @@ class CalibratedEnsemble:
 
     # ------------------------------------------------------------------ #
 
-    def _split_fit_calib(self, dates: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray]:
+    def _internal_folds(
+        self,
+        dates: pd.DatetimeIndex,
+        t1: pd.Series | None,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """K purged forward-chaining (train_idx, test_idx) splits over train.
+
+        Unique dates are cut into K+1 contiguous segments; fold k tests on
+        segment k+1 and trains on everything strictly before it, minus any
+        event whose life (real ``t1`` when given, else date + horizon bars)
+        reaches into the test block.
+        """
         values = to_naive_utc(dates)
         unique = np.unique(values)
-        cut_pos = int(len(unique) * (1.0 - _CALIB_FRACTION))
-        cut_pos = min(max(cut_pos, 1), len(unique) - 2)
-        calib_start = unique[min(cut_pos + self._horizon, len(unique) - 1)]
-        fit_end = unique[cut_pos - 1]
-        fit_mask = values <= fit_end
-        calib_mask = values >= calib_start
-        return np.where(fit_mask)[0], np.where(calib_mask)[0]
+        k = self._cfg.internal_folds
+        # Shrink K rather than fail when the window is short.
+        while k > 2 and len(unique) // (k + 1) < 60:
+            k -= 1
+        edges = np.linspace(0, len(unique), k + 2, dtype=int)
+
+        if t1 is not None:
+            end_values = to_naive_utc(t1)
+        else:
+            pos = np.searchsorted(unique, values)
+            end_pos = np.minimum(pos + self._horizon, len(unique) - 1)
+            end_values = unique[end_pos]
+
+        folds: list[tuple[np.ndarray, np.ndarray]] = []
+        for j in range(1, k + 1):
+            test_start = unique[edges[j]]
+            test_end = unique[edges[j + 1] - 1]
+            train_mask = (values < test_start) & (end_values < test_start)
+            test_mask = (values >= test_start) & (values <= test_end)
+            train_idx, test_idx = np.where(train_mask)[0], np.where(test_mask)[0]
+            if len(train_idx) >= 200 and len(test_idx) >= 50:
+                folds.append((train_idx, test_idx))
+        if not folds:
+            raise ValueError("training window too small for internal OOF folds")
+        return folds
 
     def fit(
         self,
@@ -181,32 +216,33 @@ class CalibratedEnsemble:
         y: pd.Series,
         dates: pd.DatetimeIndex,
         sample_weight: pd.Series | None = None,
+        t1: pd.Series | None = None,
     ) -> CalibratedEnsemble:
         if len(X) != len(y) or len(X) != len(dates):
             raise ValueError("X, y, dates must align")
         if len(X) > self._cfg.max_train_rows:
-            X, y = X.iloc[-self._cfg.max_train_rows :], y.iloc[-self._cfg.max_train_rows :]
-            dates = dates[-self._cfg.max_train_rows :]
+            keep = slice(-self._cfg.max_train_rows, None)
+            X, y, dates = X.iloc[keep], y.iloc[keep], dates[keep]
             if sample_weight is not None:
-                sample_weight = sample_weight.iloc[-self._cfg.max_train_rows :]
+                sample_weight = sample_weight.iloc[keep]
+            if t1 is not None:
+                t1 = t1.iloc[keep]
 
         self.feature_names_ = list(X.columns)
         y_arr = y.to_numpy().astype(int)
         w_arr = sample_weight.to_numpy() if sample_weight is not None else None
 
-        fit_idx, calib_idx = self._split_fit_calib(dates)
-        if len(fit_idx) < 200 or len(calib_idx) < 50:
-            raise ValueError(
-                f"training window too small: fit={len(fit_idx)}, calib={len(calib_idx)}"
-            )
-        X_fit, y_fit = X.iloc[fit_idx], y_arr[fit_idx]
-        X_cal, y_cal = X.iloc[calib_idx], y_arr[calib_idx]
-        w_fit = w_arr[fit_idx] if w_arr is not None else None
-
+        folds = self._internal_folds(dates, t1)
+        last_train, last_test = folds[-1]
         rng = np.random.default_rng(self._seed)
-        report = FitReport(n_fit=len(fit_idx), n_calib=len(calib_idx))
+        report = FitReport(n_fit=len(X))
 
-        member_probs: dict[str, np.ndarray] = {}
+        # ---- 1) hyperparameter search on the last (largest) internal fold --
+        X_lt, y_lt = X.iloc[last_train], y_arr[last_train]
+        w_lt = w_arr[last_train] if w_arr is not None else None
+        X_lv, y_lv = X.iloc[last_test], y_arr[last_test]
+        chosen: dict[str, dict[str, Any]] = {}
+        last_fold_model: dict[str, Any] = {}
         for name in self._cfg.members:
             candidates = [_default_params(name)] + [
                 _sample_params(name, rng) for _ in range(self._cfg.tuning_iterations)
@@ -214,20 +250,46 @@ class CalibratedEnsemble:
             best: tuple[float, dict[str, Any], Any] | None = None
             for params in candidates:
                 model = _build_member(name, params, self._seed)
-                _fit_member(model, X_fit, y_fit, w_fit)
-                p = model.predict_proba(X_cal)[:, 1]
-                score = log_loss(y_cal, np.clip(p, 1e-6, 1 - 1e-6))
+                _fit_member(model, X_lt, y_lt, w_lt)
+                p = model.predict_proba(X_lv)[:, 1]
+                score = log_loss(y_lv, np.clip(p, 1e-6, 1 - 1e-6))
                 if best is None or score < best[0]:
                     best = (score, params, model)
             assert best is not None
-            loss, params, model = best
-            self._members[name] = model
-            p_cal = model.predict_proba(X_cal)[:, 1]
-            member_probs[name] = p_cal
-            auc = roc_auc_score(y_cal, p_cal) if len(np.unique(y_cal)) > 1 else float("nan")
+            chosen[name] = best[1]
+            last_fold_model[name] = best[2]  # reuse as the OOF fit for the last fold
+
+        # ---- 2) out-of-fold predictions across all internal folds ----------
+        oof_probs: dict[str, list[np.ndarray]] = {n: [] for n in self._cfg.members}
+        oof_y: list[np.ndarray] = []
+        for train_idx, test_idx in folds:
+            X_te = X.iloc[test_idx]
+            oof_y.append(y_arr[test_idx])
+            is_last = test_idx is last_test
+            for name in self._cfg.members:
+                if is_last:
+                    model = last_fold_model[name]
+                else:
+                    model = _build_member(name, chosen[name], self._seed)
+                    _fit_member(
+                        model,
+                        X.iloc[train_idx],
+                        y_arr[train_idx],
+                        w_arr[train_idx] if w_arr is not None else None,
+                    )
+                oof_probs[name].append(model.predict_proba(X_te)[:, 1])
+
+        y_oof = np.concatenate(oof_y)
+        member_oof = {n: np.concatenate(ps) for n, ps in oof_probs.items()}
+        report.n_calib = len(y_oof)
+
+        for name in self._cfg.members:
+            p = member_oof[name]
+            loss = float(log_loss(y_oof, np.clip(p, 1e-6, 1 - 1e-6)))
+            auc = float(roc_auc_score(y_oof, p)) if len(np.unique(y_oof)) > 1 else float("nan")
             report.members.append(
-                MemberReport(name=name, params=params, calib_log_loss=loss,
-                             calib_auc=float(auc), weight=0.0)
+                MemberReport(name=name, params=chosen[name], calib_log_loss=loss,
+                             calib_auc=auc, weight=0.0)
             )
 
         losses = np.array([m.calib_log_loss for m in report.members])
@@ -237,15 +299,24 @@ class CalibratedEnsemble:
             m.weight = float(w)
             self._weights[m.name] = float(w)
 
+        # ---- 3) calibrate on pooled OOF ensemble probabilities -------------
         p_ens = np.sum(
-            [self._weights[n] * member_probs[n] for n in self._members], axis=0
+            [self._weights[n] * member_oof[n] for n in self._cfg.members], axis=0
         )
-        self._fit_calibrator(p_ens, y_cal, report)
+        self._fit_calibrator(p_ens, y_oof, report)
         p_final = self._apply_calibrator(p_ens)
-        report.calib_brier = float(np.mean((p_final - y_cal) ** 2))
+        report.calib_brier = float(np.mean((p_final - y_oof) ** 2))
+
+        # ---- 4) refit members on the FULL training window ------------------
+        for name in self._cfg.members:
+            model = _build_member(name, chosen[name], self._seed)
+            _fit_member(model, X, y_arr, w_arr)
+            self._members[name] = model
+
         self.report_ = report
         logger.info(
-            "ensemble fit: %s | brier=%.4f",
+            "ensemble fit (K=%d OOF, %d rows pooled): %s | oof brier=%.4f",
+            len(folds), len(y_oof),
             {m.name: round(m.weight, 2) for m in report.members},
             report.calib_brier,
         )

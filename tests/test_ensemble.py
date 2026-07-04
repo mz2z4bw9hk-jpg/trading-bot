@@ -110,3 +110,50 @@ def test_tuning_path_samples_all_members():
     model.fit(X, y, dates)
     p = model.predict_proba(X.tail(100))[:, 1]
     assert np.isfinite(p).all()
+
+
+def test_internal_folds_are_purged():
+    """No internal training event may live into its own OOF test block."""
+    n = 1200
+    dates = pd.DatetimeIndex(pd.bdate_range("2016-01-01", periods=n, tz="UTC"))
+    # every event lasts 15 bars
+    t1 = pd.Series(dates[np.minimum(np.arange(n) + 15, n - 1)])
+    model = CalibratedEnsemble(
+        ModelConfig(members=["logistic"], tuning_iterations=0, internal_folds=3),
+        horizon_bars=15,
+    )
+    folds = model._internal_folds(dates, t1)
+    assert len(folds) >= 2
+    for train_idx, test_idx in folds:
+        test_start = dates[test_idx].min()
+        assert (pd.DatetimeIndex(t1.iloc[train_idx]) < test_start).all()
+        assert (dates[train_idx] < test_start).all()
+
+
+def test_internal_folds_shrink_on_short_windows():
+    """K collapses toward 2 rather than producing sliver folds."""
+    n = 400  # 400 // (3+1) = 100 dates/segment -> fine; 400 // (5+1) = 66 also fine
+    dates = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=n, tz="UTC"))
+    tiny = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=150, tz="UTC"))
+    model = CalibratedEnsemble(
+        ModelConfig(members=["logistic"], tuning_iterations=0, internal_folds=4),
+        horizon_bars=5,
+    )
+    assert len(model._internal_folds(dates, None)) >= 2
+    # 150 dates cannot host 4 folds of >=60 dates: K must shrink (and may
+    # still fail the row-count floor, which raises loudly).
+    try:
+        folds = model._internal_folds(tiny, None)
+        assert len(folds) <= 2
+    except ValueError:
+        pass  # acceptable: too small is a loud error, never a silent sliver
+
+
+def test_oof_report_semantics(fitted):
+    """n_fit is the FULL window; n_calib counts pooled OOF rows only."""
+    model, _, _ = fitted
+    r = model.report_
+    assert r is not None
+    assert r.n_fit == 2400              # entire training window
+    assert 0 < r.n_calib < r.n_fit      # OOF pool is a strict subset
+    assert np.isfinite(r.calib_brier)

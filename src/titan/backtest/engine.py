@@ -46,6 +46,7 @@ class TradePlan:
     max_holding_bars: int
     side: Side = Side.LONG
     entry_ref: float = 0.0  # reference price at decision (close of decision bar)
+    priority: float = 0.0   # execution priority within a bar (e.g. confidence)
     tag: str = ""
 
     def __post_init__(self) -> None:
@@ -186,11 +187,15 @@ class BacktestEngine:
         n_submitted = 0
         for plan in plans:
             n_submitted += 1
-            p = pos_of_date.get(plan.decision_date)
-            if p is None or p + self._cfg.execution_lag_bars >= len(calendar):
+            cal_pos = pos_of_date.get(plan.decision_date)
+            if cal_pos is None or cal_pos + self._cfg.execution_lag_bars >= len(calendar):
                 continue
-            exec_date = calendar[p + self._cfg.execution_lag_bars]
+            exec_date = calendar[cal_pos + self._cfg.execution_lag_bars]
             scheduled.setdefault(exec_date, []).append(plan)
+        # When capacity binds, the BEST candidates must win the slots — not
+        # whichever symbol happens to sort first.
+        for day_plans in scheduled.values():
+            day_plans.sort(key=lambda pl: -pl.priority)
 
         cash = self._cfg.initial_capital
         peak_equity = cash
@@ -300,11 +305,17 @@ class BacktestEngine:
                         n_rejected += 1
                         continue
                 bar = frame.loc[ts]
+                open_px = float(bar["open"])
+                # A gap through either level invalidates the plan: the setup
+                # the signal priced no longer exists at the open.
+                if open_px <= plan.stop_price or open_px >= plan.tp_price:
+                    n_rejected += 1
+                    continue
                 v = float(vol[plan.symbol].get(ts, 0.01))
-                fill = self._costs.apply_entry(float(bar["open"]), v, is_long=True)
+                fill = self._costs.apply_entry(open_px, v, is_long=True)
                 shares = size * equity_now / fill
                 cash -= shares * fill
-                positions[plan.symbol] = _Position(
+                position = _Position(
                     symbol=plan.symbol,
                     entry_date=ts,
                     entry_price=fill,
@@ -319,6 +330,27 @@ class BacktestEngine:
                     low_water=float(bar["low"]),
                     high_water=float(bar["high"]),
                 )
+                positions[plan.symbol] = position
+
+                # Entry-bar barrier evaluation: the triple-barrier labels count
+                # touches from the entry bar onward, so the engine must too —
+                # a stop is live the moment the fill exists, not the next day.
+                hit_stop = float(bar["low"]) <= position.stop
+                hit_tp = float(bar["high"]) >= position.tp
+                exit_px: float | None = None
+                if hit_stop and hit_tp:
+                    exit_px, why = (
+                        (position.stop, "stop")
+                        if self._cfg.stop_first_on_ambiguous_bar
+                        else (position.tp, "tp")
+                    )
+                elif hit_stop:
+                    exit_px, why = position.stop, "stop"
+                elif hit_tp:
+                    exit_px, why = position.tp, "tp"
+                if exit_px is not None:
+                    _close_position(position, ts, exit_px, why)
+                    del positions[plan.symbol]
 
             equity_now = _mark_equity(ts)
             peak_equity = max(peak_equity, equity_now)

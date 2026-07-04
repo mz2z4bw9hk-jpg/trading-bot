@@ -7,7 +7,7 @@ numbers are the most common symptom of leakage.
 ## 0. Machinery gates (run on every change, automated)
 
 ```bash
-pytest -q            # 102 tests
+pytest -q            # 108 tests
 ```
 
 - **Causality:** every feature recomputed on truncated history must be
@@ -17,7 +17,8 @@ pytest -q            # 102 tests
   test window (`tests/test_cv.py`, plus `assert_no_leakage` re-checked at
   runtime inside every walk-forward).
 - **Accounting:** engine PnL is checked against hand-computed fills,
-  including slippage, commission, gap-through-stop and the pessimistic
+  including slippage, commission, gap-through-stop, entry-bar stop parity
+  with the labels, gap-past-level plan invalidation, and the pessimistic
   same-bar rule (`tests/test_engine.py`).
 - **No fabricated skill:** on shuffled labels the ensemble must score
   AUC ≈ 0.5 (`tests/test_ensemble.py`). A pipeline that finds signal in
@@ -53,7 +54,9 @@ this order:
 ## 2. Overfitting controls (already in the machinery)
 
 - Feature selection, hyperparameters, member weights, calibration and
-  thresholds are all fitted **inside each fold's training window only**.
+  thresholds are all fitted **inside each fold's training window only** —
+  and member weights/calibration specifically on purged out-of-fold
+  predictions within that window, never on anything a member trained on.
 - The signal threshold is *derived* from costs + barrier geometry, not
   optimized on outcomes.
 - Redundancy pruning caps effective dimensionality; permutation importance
@@ -73,8 +76,11 @@ mean fragility:
 - **Barriers**: `tp_sigma`/`sl_sigma` ± 25%; `horizon_bars` ± 5.
 - **Universe**: drop each instrument (jackknife); results should not hinge
   on one name.
-- **Seed**: different `run.seed` values move nothing but tie-breaks; if
-  conclusions flip with the seed, there are no conclusions.
+- **Seed**: on real data a different `run.seed` moves nothing but model
+  tie-breaks — if conclusions flip, there are no conclusions. On the
+  synthetic provider a new seed generates a NEW market, so the check is
+  stronger: the *conclusion* (planted signal detected / weak market
+  rejected) must reproduce even though the numbers move.
 - **Regime multipliers**: setting all to 1.0 should *hurt* (that's the
   gate earning its keep) but not zero out returns.
 

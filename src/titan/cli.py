@@ -34,6 +34,8 @@ def _load_cfg(args: argparse.Namespace) -> TitanConfig:
         overrides.setdefault("cv", {})["n_folds"] = args.folds
     if getattr(args, "tuning", None) is not None:
         overrides.setdefault("model", {})["tuning_iterations"] = args.tuning
+    if getattr(args, "seed", None) is not None:
+        overrides.setdefault("run", {})["seed"] = args.seed
     cfg = load_config(path, overrides)
     configure_logging(cfg.run.log_level)
     return cfg
@@ -242,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--out", help="artifacts output dir")
     p_val.add_argument("--folds", type=int, help="override cv.n_folds")
     p_val.add_argument("--tuning", type=int, help="override model.tuning_iterations")
+    p_val.add_argument("--seed", type=int, help="override run.seed (seed-sensitivity runs)")
     p_val.set_defaults(func=cmd_validate)
 
     p_scan = sub.add_parser("scan", help="scan the universe with the production model")

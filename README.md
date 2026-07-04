@@ -16,7 +16,7 @@ evidence trail behind them.
 
 | Claim | Status |
 |---|---|
-| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 102 automated tests, incl. leak-detection and hand-computed accounting checks |
+| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 108 automated tests, incl. leak-detection and hand-computed accounting checks |
 | Statistical machinery (walk-forward, bootstrap CIs, PSR/DSR, drift) | **Implemented and tested** |
 | Edge on real markets | **Not claimed.** The default config runs on a synthetic regime-switching market with *known planted structure* so the whole system is verifiable offline. Connect real data and run the full protocol in `docs/VALIDATION.md` before believing anything. |
 | Execution / brokerage | Out of scope by design |
@@ -38,7 +38,8 @@ raw OHLCV ──► quality gates ──► causal features (~70, 8 families)
                                      │
               purged walk-forward (embargoed, leakage-checked at runtime)
                                      │
-        calibrated ensemble (HGB + RF + logistic, isotonic calibration)
+     calibrated ensemble (HGB + RF + logistic; purged K-fold OOF stacking,
+        isotonic calibration on pooled OOF, full-train member refit)
                                      │
    regime detector (GMM states + rules) ──► gates strategy + scales risk
                                      │
@@ -87,7 +88,7 @@ titan scan
 titan info
 
 # tests & lint  (negative control lives here: shuffled labels => AUC ~0.5)
-pytest -q          # 102 tests; -m "not slow" for the fast subset
+pytest -q          # 108 tests; -m "not slow" for the fast subset
 ruff check src tests
 ```
 
@@ -137,7 +138,7 @@ src/titan/
   server/           FastAPI + self-contained dashboard (dark/light, responsive)
   cli.py            validate / scan / dashboard / info
   artifacts.py      research outputs -> auditable files
-tests/              102 tests: causality, leakage, accounting, calibration, e2e
+tests/              108 tests: causality, leakage, accounting, calibration, e2e
 docs/               RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
 ```
 
@@ -147,7 +148,9 @@ docs/               RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
   truncated history in CI; a single changed value fails the build.
 - **Labels are events, not returns** — triple-barrier with vol-scaled
   barriers matches how the engine actually exits, and event end-times feed
-  the purge.
+  the purge. The mirror is exact down to the entry bar: stops are live the
+  moment a fill exists, gaps through a level invalidate the plan, and when
+  capacity binds the highest-confidence candidates take the slots.
 - **Calibration over accuracy** — position sizing consumes probabilities;
   an uncalibrated 0.7 is a lie that costs money.
 - **The gate is derived, not tuned** — the signal threshold is the

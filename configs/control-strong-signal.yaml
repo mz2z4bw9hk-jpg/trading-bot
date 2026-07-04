@@ -42,3 +42,4 @@ cv:
 
 model:
   tuning_iterations: 2
+  internal_folds: 2      # demo speed; use 3+ for research runs

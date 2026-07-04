@@ -63,6 +63,7 @@ model:
   calibration: isotonic
   tuning_iterations: 8
   tuning_metric: log_loss
+  internal_folds: 2      # purged OOF folds inside each train window (2 = demo speed)
   store_dir: models_store
 
 regime:

@@ -38,7 +38,7 @@ def make_config(**overrides) -> TitanConfig:
         },
         "labels": {"horizon_bars": 10, "vol_span": 21},
         "cv": {"n_folds": 2, "min_train_bars": 320, "test_bars": 120, "embargo_bars": 5},
-        "model": {"members": ["hgb", "logistic"], "tuning_iterations": 0},
+        "model": {"members": ["hgb", "logistic"], "tuning_iterations": 0, "internal_folds": 2},
         "regime": {"min_train_bars": 200},
     }
 

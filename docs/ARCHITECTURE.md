@@ -56,11 +56,11 @@ DataConfig ─► build_provider ─► SyntheticProvider | YahooProvider | CSVP
 | `features.registry.FeatureSpec` | `fn(ohlcv) -> Series`, value at `t` uses only bars `<= t`; verified by `verify_causality` |
 | `labels.triple_barrier` | label + `t1` event end per decision bar; pessimistic same-bar tie |
 | `models.cv.PurgedWalkForward` | forward-chained folds; train events end before embargoed test start |
-| `models.ensemble.CalibratedEnsemble` | `fit(X, y, dates, w)`; `predict_proba` calibrated; `uncertainty` = member disagreement |
+| `models.ensemble.CalibratedEnsemble` | `fit(X, y, dates, w, t1)`; weights + calibrator from purged K-fold OOF, members refit on full train; `predict_proba` calibrated; `uncertainty` = member disagreement |
 | `regime.RegimeDetector` | `fit(train bench)` then frozen, causal `transform`; never a model feature |
 | `signals.SignalGenerator` | returns `None` unless every gate passes; a `Signal` is complete or absent |
 | `risk.RiskEngine` | implements `RiskApprover.approve(plan, snapshot) -> size`; pure function of config + state |
-| `backtest.BacktestEngine` | next-bar open execution, cost-adjusted fills, pessimistic intrabar stops |
+| `backtest.BacktestEngine` | next-bar open execution, cost-adjusted fills, pessimistic intrabar stops live from the entry bar, gap-past-level entry invalidation, priority-ordered fills when capacity binds |
 | `monitor.compare.promotion_gate` | ALL conditions or no promotion; reasons are returned, not logged away |
 
 ## Extension points

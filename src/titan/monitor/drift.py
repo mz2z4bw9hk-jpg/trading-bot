@@ -112,9 +112,10 @@ class PredictionTracker:
         resolved = self._resolved()[-window:]
         if not resolved:
             return float("nan")
-        return float(
-            np.mean([(r.probability - r.outcome) ** 2 for r in resolved])
-        )
+        errors = [
+            (r.probability - r.outcome) ** 2 for r in resolved if r.outcome is not None
+        ]
+        return float(np.mean(errors)) if errors else float("nan")
 
     def calibration_table(self, n_bins: int = 5) -> list[dict]:
         resolved = self._resolved()
@@ -141,9 +142,10 @@ class PredictionTracker:
 
     def cusum_alarm(self) -> tuple[bool, float]:
         """One-sided CUSUM on per-prediction Brier excess over baseline."""
-        resolved = self._resolved()
         s = 0.0
-        for r in resolved:
+        for r in self._resolved():
+            if r.outcome is None:
+                continue
             err = (r.probability - r.outcome) ** 2
             s = max(0.0, s + (err - self.baseline_brier - self.cusum_k))
             if s >= self.cusum_h:

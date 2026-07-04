@@ -103,11 +103,15 @@ flagged by drift reports, not defended by us.
   labels leak across naive fold boundaries; K-fold also lets models train on
   the future. Both are structurally impossible here, and
   `assert_no_leakage` re-proves it at runtime on every run.
-- **Heterogeneous ensemble + isotonic calibration**: boosted trees are
-  accurate but miscalibrated (Niculescu-Mizil & Caruana 2005); sizing needs
-  calibrated probabilities. Members with different bias structures also
-  give a free uncertainty signal — their disagreement — which gates
-  signals independently of the probability level.
+- **Heterogeneous ensemble + purged-OOF isotonic calibration**: boosted
+  trees are accurate but miscalibrated (Niculescu-Mizil & Caruana 2005);
+  sizing needs calibrated probabilities. Member weights and the calibrator
+  are learned on pooled out-of-fold predictions from K purged internal
+  folds — calibration therefore sees several market regimes instead of only
+  the tail of the training window — and the deployed members are then refit
+  on the full window, wasting no data. Members with different bias
+  structures also give a free uncertainty signal — their disagreement —
+  which gates signals independently of the probability level.
 - **Derived threshold**: the minimum acceptable probability is computed
   from barrier geometry and the cost model (`p* = (b + c + margin)/(a+b)`),
   not fitted. A fitted threshold is one more overfittable parameter; a

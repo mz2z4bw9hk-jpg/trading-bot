@@ -53,6 +53,7 @@ model:
   members: [hgb, rf, logistic]
   calibration: isotonic
   tuning_iterations: 16
+  internal_folds: 3      # OOF calibration sees three regimes per train window
 
 backtest:
   costs:
