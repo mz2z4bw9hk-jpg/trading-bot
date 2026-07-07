@@ -139,7 +139,7 @@ src/titan/
   cli.py            validate / scan / dashboard / info
   artifacts.py      research outputs -> auditable files
 tests/              108 tests: causality, leakage, accounting, calibration, e2e
-docs/               RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
+docs/               USER_GUIDE.md, RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
 ```
 
 ## Design positions (the short version)
@@ -162,6 +162,7 @@ docs/               RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
   calibration, and a promotion gate that keeps challengers out of production
   without statistical proof.
 
+Hands-on tutorial (first run → daily use → real data): `docs/USER_GUIDE.md`.
 Full methodology and the evidence behind each decision: `docs/RESEARCH.md`.
 Validation protocol and rejection gates: `docs/VALIDATION.md`.
 Module-level architecture and extension points: `docs/ARCHITECTURE.md`.
