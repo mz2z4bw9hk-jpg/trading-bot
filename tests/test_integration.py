@@ -144,3 +144,27 @@ def test_dashboard_api_serves_artifacts(wf_run, cfg, dataset, tmp_path_factory):
         r = client.get(ep)
         assert r.status_code == 200, ep
     assert client.get("/api/scan").status_code == 404  # not written in this tmp dir
+
+
+@pytest.mark.slow
+def test_static_export_matches_live_api(wf_run, cfg, dataset, tmp_path_factory):
+    """The numbers a static export embeds must be exactly what the API serves."""
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from titan.server.app import create_app
+    from titan.server.export import export_static_dashboard
+
+    _runner, _panel, report = wf_run
+    out = tmp_path_factory.mktemp("artifacts_export")
+    write_walkforward_artifacts(out, cfg, dataset, report)
+
+    html_path, _payloads = export_static_dashboard(out, out / "titan_dashboard.html")
+    match = re.search(r"window\.TITAN_EMBEDDED = (.*?);</script>", html_path.read_text(), re.S)
+    assert match
+    embedded = json.loads(match.group(1))
+
+    client = TestClient(create_app(out))
+    for key in ("report", "equity", "regimes", "correlation", "universe", "manifest"):
+        assert embedded[key] == client.get(f"/api/{key}").json(), key

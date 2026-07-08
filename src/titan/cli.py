@@ -8,6 +8,9 @@ Commands
 - ``titan scan``      rank the universe on the latest bar with the production
   bundle; writes scan artifacts.
 - ``titan dashboard`` serve the dashboard + JSON API over the artifacts dir.
+- ``titan export``    write the dashboard + artifacts as ONE self-contained
+  HTML file: open by double-click, share, or drop on any static host — no
+  server, no Python needed to view it.
 - ``titan info``      show config, registry and artifact status.
 """
 
@@ -212,6 +215,26 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    from titan.server.export import export_static_dashboard
+
+    cfg = _load_cfg(args)
+    artifacts_dir = Path(args.artifacts or cfg.run.artifacts_dir)
+    out = Path(args.out or (artifacts_dir / "titan_dashboard.html"))
+    try:
+        path, payloads = export_static_dashboard(artifacts_dir, out)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps({
+        "output": str(path.resolve()),
+        "size_kb": round(path.stat().st_size / 1024, 1),
+        "embedded": sorted(k for k, v in payloads.items() if v is not None),
+        "missing": sorted(k for k, v in payloads.items() if v is None),
+    }, indent=1))
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     from titan.models.registry import ModelRegistry
 
@@ -258,6 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--host", default="127.0.0.1")
     p_dash.add_argument("--port", type=int, default=8321)
     p_dash.set_defaults(func=cmd_dashboard)
+
+    p_exp = sub.add_parser(
+        "export", help="write a single self-contained dashboard HTML file (no server needed)"
+    )
+    p_exp.add_argument("--config", help="YAML config path")
+    p_exp.add_argument("--artifacts", help="artifacts dir to export (default: config artifacts_dir)")
+    p_exp.add_argument("--out", help="output HTML path (default: <artifacts>/titan_dashboard.html)")
+    p_exp.set_defaults(func=cmd_export)
 
     p_info = sub.add_parser("info", help="show platform status")
     p_info.add_argument("--config", help="YAML config path")

@@ -45,6 +45,8 @@ DataConfig ─► build_provider ─► SyntheticProvider | YahooProvider | CSVP
       artifacts.py ─► report.json / equity.csv / signals.json / ...
                                      │
       titan.server (FastAPI) ─► dashboard.html      (read-only)
+      titan.server.export    ─► ONE static HTML file (same page, payloads
+                                 baked in via server/payloads.py — no server)
       ModelRegistry ─► bundle vNNN (candidate) ─► promotion gate ─► production
 ```
 

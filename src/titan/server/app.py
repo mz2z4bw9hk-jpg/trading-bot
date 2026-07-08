@@ -3,40 +3,25 @@
 Every endpoint is a read-through to files produced by ``titan validate`` /
 ``titan scan``. If the dashboard shows a number, that number exists in an
 artifact on disk and can be audited. Missing artifacts return 404 with a hint
-instead of empty fabrications.
+instead of empty fabrications. Payload construction lives in ``payloads.py``,
+shared with the static exporter, so both views serve identical numbers.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from titan.server.payloads import (
+    JSON_ARTIFACTS,
+    equity_payload,
+    json_payload,
+    regimes_payload,
+)
+
 _STATIC = Path(__file__).parent / "static"
-_MAX_POINTS = 1500
-
-_JSON_ARTIFACTS = {
-    "report": "report.json",
-    "signals": "signals.json",
-    "trades": "trades.json",
-    "scan": "scan.json",
-    "importance": "importance.json",
-    "universe": "universe.json",
-    "correlation": "correlation.json",
-    "quality": "quality.json",
-    "manifest": "manifest.json",
-}
-
-
-def _downsample(df: pd.DataFrame, max_points: int = _MAX_POINTS) -> pd.DataFrame:
-    if len(df) <= max_points:
-        return df
-    step = int(len(df) / max_points) + 1
-    # Keep the last row: the most recent state matters most.
-    return pd.concat([df.iloc[::step], df.tail(1)]).drop_duplicates()
 
 
 def create_app(artifacts_dir: str | Path) -> FastAPI:
@@ -44,19 +29,19 @@ def create_app(artifacts_dir: str | Path) -> FastAPI:
     app = FastAPI(title="TITAN dashboard", docs_url=None, redoc_url=None)
 
     def _read_json(name: str) -> object:
-        path = artifacts / _JSON_ARTIFACTS[name]
-        if not path.exists():
+        payload = json_payload(artifacts, name)
+        if payload is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"artifact {path.name} not found — run `titan validate` first",
+                detail=f"artifact {JSON_ARTIFACTS[name]} not found — run `titan validate` first",
             )
-        return json.loads(path.read_text())
+        return payload
 
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "artifacts": str(artifacts.resolve())}
 
-    for name in _JSON_ARTIFACTS:
+    for name in JSON_ARTIFACTS:
 
         def _make(name: str = name):
             def endpoint() -> JSONResponse:
@@ -68,35 +53,17 @@ def create_app(artifacts_dir: str | Path) -> FastAPI:
 
     @app.get("/api/equity")
     def equity() -> JSONResponse:
-        path = artifacts / "equity.csv"
-        if not path.exists():
+        payload = equity_payload(artifacts)
+        if payload is None:
             raise HTTPException(status_code=404, detail="equity.csv not found")
-        df = pd.read_csv(path, parse_dates=["date"])
-        df = _downsample(df)
-        return JSONResponse(
-            {
-                "date": [str(d.date()) for d in df["date"]],
-                "equity": [round(float(v), 2) for v in df["equity"]],
-                "drawdown": [round(float(v), 5) for v in df["drawdown"]],
-                "exposure": [round(float(v), 4) for v in df["exposure"]],
-            }
-        )
+        return JSONResponse(payload)
 
     @app.get("/api/regimes")
     def regimes() -> JSONResponse:
-        path = artifacts / "regimes.csv"
-        if not path.exists():
+        payload = regimes_payload(artifacts)
+        if payload is None:
             raise HTTPException(status_code=404, detail="regimes.csv not found")
-        df = pd.read_csv(path, parse_dates=["date"])
-        df = _downsample(df)
-        return JSONResponse(
-            {
-                "date": [str(d.date()) for d in df["date"]],
-                "regime": df["regime"].astype(str).tolist(),
-                "vol_state": df["vol_state"].astype(str).tolist(),
-                "confidence": [round(float(v), 3) for v in df["confidence"]],
-            }
-        )
+        return JSONResponse(payload)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

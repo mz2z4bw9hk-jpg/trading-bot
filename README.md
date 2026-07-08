@@ -16,7 +16,7 @@ evidence trail behind them.
 
 | Claim | Status |
 |---|---|
-| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 108 automated tests, incl. leak-detection and hand-computed accounting checks |
+| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 115 automated tests, incl. leak-detection and hand-computed accounting checks |
 | Statistical machinery (walk-forward, bootstrap CIs, PSR/DSR, drift) | **Implemented and tested** |
 | Edge on real markets | **Not claimed.** The default config runs on a synthetic regime-switching market with *known planted structure* so the whole system is verifiable offline. Connect real data and run the full protocol in `docs/VALIDATION.md` before believing anything. |
 | Execution / brokerage | Out of scope by design |
@@ -81,6 +81,10 @@ titan validate --config configs/default.yaml
 # serve the dashboard over the artifacts
 titan dashboard --port 8321        # http://127.0.0.1:8321
 
+# OR: pack dashboard + results into ONE static HTML file — opens with a
+# double-click, no server or Python needed to view, hosts anywhere
+titan export                       # -> artifacts/titan_dashboard.html
+
 # rank the universe with the current production model
 titan scan
 
@@ -88,7 +92,7 @@ titan scan
 titan info
 
 # tests & lint  (negative control lives here: shuffled labels => AUC ~0.5)
-pytest -q          # 108 tests; -m "not slow" for the fast subset
+pytest -q          # 115 tests; -m "not slow" for the fast subset
 ruff check src tests
 ```
 
@@ -136,9 +140,10 @@ src/titan/
   scanner/          universe ranking with rejection reasons
   monitor/          PSI drift, prediction tracking, champion/challenger gate
   server/           FastAPI + self-contained dashboard (dark/light, responsive)
-  cli.py            validate / scan / dashboard / info
+                    + one-file static export (payloads.py keeps both identical)
+  cli.py            validate / scan / dashboard / export / info
   artifacts.py      research outputs -> auditable files
-tests/              108 tests: causality, leakage, accounting, calibration, e2e
+tests/              115 tests: causality, leakage, accounting, calibration, e2e
 docs/               USER_GUIDE.md, RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
 ```
 

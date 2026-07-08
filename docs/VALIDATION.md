@@ -7,7 +7,7 @@ numbers are the most common symptom of leakage.
 ## 0. Machinery gates (run on every change, automated)
 
 ```bash
-pytest -q            # 108 tests
+pytest -q            # 115 tests
 ```
 
 - **Causality:** every feature recomputed on truncated history must be

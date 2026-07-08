@@ -108,6 +108,7 @@ How to read it:
 titan scan                    # rank the universe with the production model
 titan info                    # registry status, production version, universe
 titan dashboard --port 8321   # always reads the latest artifacts
+titan export                  # one static HTML file of the same dashboard
 ```
 
 `scan` is pure inference (seconds). Retraining happens only through
@@ -115,6 +116,16 @@ titan dashboard --port 8321   # always reads the latest artifacts
 the incumbent through the statistical promotion gate — a challenger with a
 non-significant edge or a degraded drawdown stays shelved, with reasons
 recorded in `models_store/index.json`.
+
+### Sharing results without a server
+
+`titan export` writes `artifacts/titan_dashboard.html`: the full dashboard
+with every number baked in. It opens with a double-click — no Python, no
+server, no network — and can be e-mailed or dropped on any static host
+(GitHub Pages, Netlify, an S3 bucket). It is a frozen snapshot of one run
+(the footer shows the export time); re-export after each `validate`/`scan`
+to refresh it. The embedded payloads are byte-identical to what the live
+API serves — a test enforces it.
 
 ## 6. Connecting real data
 
@@ -171,7 +182,7 @@ CLI overrides for quick experiments:
 
 ```bash
 pytest -q -m "not slow"     # fast unit tests (~30 s)
-pytest -q                   # full suite incl. end-to-end (108 tests)
+pytest -q                   # full suite incl. end-to-end (115 tests)
 ruff check src tests scripts
 python -m mypy src/titan
 python scripts/screenshot_dashboard.py   # visual check of the dashboard

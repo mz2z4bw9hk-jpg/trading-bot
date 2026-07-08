@@ -200,19 +200,28 @@
 <div id="tooltip"></div>
 <footer id="footer"></footer>
 
+<!-- TITAN:EMBED -->
 <script>
 "use strict";
 /* ---------- theme ---------- */
 const themeBtn = document.getElementById("theme-btn");
 const applyTheme = t => { if (t) document.documentElement.dataset.theme = t; };
-applyTheme(localStorage.getItem("titan-theme"));
+const store = {   // storage can be walled off (sandboxed iframe, file://) — degrade to per-load theme
+  get: () => { try { return localStorage.getItem("titan-theme"); } catch { return null; } },
+  set: t => { try { localStorage.setItem("titan-theme", t); } catch { } },
+};
+applyTheme(store.get());
 themeBtn.onclick = () => {
   const cur = document.documentElement.dataset.theme ||
     (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const next = cur === "dark" ? "light" : "dark";
-  localStorage.setItem("titan-theme", next); applyTheme(next);
-  render(); // re-render charts with new palette vars
+  store.set(cur === "dark" ? "light" : "dark");
+  applyTheme(cur === "dark" ? "light" : "dark");
 };
+/* Charts bake palette vars in at draw time, so repaint whenever the theme
+   attribute changes — whether from our button or an embedding host's toggle. */
+new MutationObserver(() => render()).observe(
+  document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 /* ---------- utils ---------- */
@@ -220,7 +229,11 @@ const $ = s => document.querySelector(s);
 const fmtPct = (v, d=1) => (v==null||isNaN(v)) ? "—" : (100*v).toFixed(d) + "%";
 const fmtNum = (v, d=2) => (v==null||isNaN(v)) ? "—" : (+v).toFixed(d);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+/* `titan export` bakes the payloads into window.TITAN_EMBEDDED so this same
+   page also works as a single static file with no server behind it. */
 async function getJSON(url) {
+  const key = url.split("/").pop(), em = window.TITAN_EMBEDDED;
+  if (em && key in em) return em[key];
   try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
   catch (e) { return null; }
 }
@@ -409,24 +422,26 @@ function heatmap(el, symbols, matrix) {
 /* ---------- data + render ---------- */
 let DATA = {};
 async function loadAll() {
-  const [report, equity, regimes, signals, scan, importance, universe, corr, manifest, quality] =
+  const [report, equity, regimes, scan, importance, universe, corr, manifest, quality] =
     await Promise.all([
       getJSON("/api/report"), getJSON("/api/equity"), getJSON("/api/regimes"),
-      getJSON("/api/signals"), getJSON("/api/scan"), getJSON("/api/importance"),
+      getJSON("/api/scan"), getJSON("/api/importance"),
       getJSON("/api/universe"), getJSON("/api/correlation"), getJSON("/api/manifest"),
       getJSON("/api/quality"),
     ]);
-  DATA = {report, equity, regimes, signals, scan, importance, universe, corr, manifest, quality};
+  DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality};
   render();
 }
 
 function render() {
-  const {report, equity, regimes, signals, scan, importance, universe, corr, manifest} = DATA;
+  const {report, equity, regimes, scan, importance, universe, corr, manifest} = DATA;
   if (manifest) {
     $("#pill-provider").innerHTML = `provider: <b>${esc(manifest.provider)}</b>`;
     $("#disclaimer").textContent = manifest.disclaimer || $("#disclaimer").textContent;
     $("#footer").textContent = `generated ${manifest.generated} · seed ${manifest.seed} · ${manifest.n_folds} folds`;
   }
+  const ex = window.TITAN_EMBEDDED && window.TITAN_EMBEDDED.__export;
+  if (ex) $("#footer").textContent += ` · static export ${ex.exported_at}`;
   /* KPIs */
   if (report) {
     const s = report.backtest.summary;
