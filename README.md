@@ -16,14 +16,17 @@ evidence trail behind them.
 
 | Claim | Status |
 |---|---|
-| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 115 automated tests, incl. leak-detection and hand-computed accounting checks |
+| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 121 automated tests, incl. leak-detection and hand-computed accounting checks |
 | Statistical machinery (walk-forward, bootstrap CIs, PSR/DSR, drift) | **Implemented and tested** |
 | Edge on real markets | **Not claimed.** The default config runs on a synthetic regime-switching market with *known planted structure* so the whole system is verifiable offline. Connect real data and run the full protocol in `docs/VALIDATION.md` before believing anything. |
 | Execution / brokerage | Out of scope by design |
 
 This sandbox has no market-data egress, so the repo ships with a synthetic
-provider as the default. The provider layer (`yahoo`, `csv`) is production
-code — switch `data.provider` in the config where network/data access exists.
+provider as the default. The provider layer (`yahoo`, `csv` — including
+TradingView "Export chart data" files, understood without renaming) is
+production code — switch `data.provider` in the config where network/data
+access exists. `configs/majors.yaml` is a ready-made large-cap
+crypto + index-ETF + mega-cap universe.
 
 **Nothing here is investment advice.**
 
@@ -92,7 +95,7 @@ titan scan
 titan info
 
 # tests & lint  (negative control lives here: shuffled labels => AUC ~0.5)
-pytest -q          # 115 tests; -m "not slow" for the fast subset
+pytest -q          # 121 tests; -m "not slow" for the fast subset
 ruff check src tests
 ```
 
@@ -143,7 +146,7 @@ src/titan/
                     + one-file static export (payloads.py keeps both identical)
   cli.py            validate / scan / dashboard / export / info
   artifacts.py      research outputs -> auditable files
-tests/              115 tests: causality, leakage, accounting, calibration, e2e
+tests/              121 tests: causality, leakage, accounting, calibration, e2e
 docs/               USER_GUIDE.md, RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
 ```
 

@@ -1,0 +1,84 @@
+# Major markets scan: large-cap crypto, US index ETFs, mega-cap stocks.
+#
+#   titan validate --config configs/majors.yaml     # full research run
+#   titan scan     --config configs/majors.yaml     # daily ranking after that
+#
+# Requires real market data. Two ways to feed it:
+#
+#   A) provider: yahoo — needs network egress to Yahoo Finance. Free, no
+#      account. This is the default below.
+#
+#   B) provider: csv — export each chart from TradingView ("Export chart
+#      data…", 1D timeframe) into one folder and point csv_dir at it. The
+#      exported filenames (e.g. "BINANCE_BTCUSDT, 1D.csv") are understood
+#      as-is. Then set:
+#           data: { provider: csv, csv_dir: data_tv, ... }
+#      and use the ticker part of each filename as the symbol here.
+#
+# Index exposure uses ETFs (SPY/QQQ/DIA/IWM/GLD) instead of raw indices
+# because the pipeline requires a volume column, which raw index series
+# often lack.
+#
+# Synthetic results DO NOT transfer to this universe: after the first run
+# read docs/VALIDATION.md §1 and §4 before believing any number.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  cache_dir: data_cache
+  bars: 2500               # ~10y of trading days; crypto trades ~7d/week
+  min_history_bars: 1500   # admits post-2020 listings (e.g. SOL); QC flags them
+  min_reliability: 0.85
+
+universe:
+  name: majors
+  benchmark: SPY
+  instruments:
+    # -- crypto majors --------------------------------------------------
+    - { symbol: BTC-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: ETH-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: SOL-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: BNB-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: XRP-USD,  asset_class: crypto, sector: crypto }
+    # -- index / broad-market ETFs --------------------------------------
+    - { symbol: SPY,      asset_class: etf,    sector: broad }
+    - { symbol: QQQ,      asset_class: etf,    sector: broad }
+    - { symbol: DIA,      asset_class: etf,    sector: broad }
+    - { symbol: IWM,      asset_class: etf,    sector: broad }
+    - { symbol: GLD,      asset_class: etf,    sector: commodities }
+    # -- mega-cap stocks -------------------------------------------------
+    - { symbol: AAPL,     asset_class: equity, sector: technology }
+    - { symbol: MSFT,     asset_class: equity, sector: technology }
+    - { symbol: NVDA,     asset_class: equity, sector: technology }
+    - { symbol: GOOGL,    asset_class: equity, sector: technology }
+    - { symbol: AMZN,     asset_class: equity, sector: consumer }
+    - { symbol: META,     asset_class: equity, sector: technology }
+    - { symbol: TSLA,     asset_class: equity, sector: consumer }
+
+cv:
+  scheme: expanding
+  n_folds: 6
+  embargo_bars: 10
+  min_train_bars: 756      # 3 years before the first test window
+  test_bars: 252
+
+model:
+  members: [hgb, rf, logistic]
+  calibration: isotonic
+  tuning_iterations: 16
+  internal_folds: 3
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 3.0        # sweep 2x-4x per VALIDATION.md §3 before trusting
+    impact_coefficient: 0.10
+    borrow_bps_daily: 0.5
+
+risk:
+  target_annual_vol: 0.10  # conservative; raise only after the full protocol
+  risk_per_trade_pct: 0.4

@@ -129,15 +129,45 @@ API serves — a test enforces it.
 
 ## 6. Connecting real data
 
-1. Copy `configs/live-example.yaml`, edit the universe/benchmark.
-   Provider `yahoo` needs network egress; provider `csv` reads
-   `{symbol}.csv` files (`data.csv_dir`) with date-indexed OHLCV columns.
+1. Start from `configs/majors.yaml` (large-cap crypto + index ETFs +
+   mega-cap stocks, ready to run) or copy `configs/live-example.yaml` and
+   edit the universe/benchmark. Provider `yahoo` needs network egress;
+   provider `csv` reads per-symbol OHLCV files from `data.csv_dir`.
 2. `titan validate --config configs/my-live.yaml`
 3. Check `artifacts/quality.json` — drop anything below ~0.9 reliability.
 4. Follow `VALIDATION.md` §1 (reading order and rejection gates) and §3
    (cost / barrier / jackknife / seed sensitivity sweeps).
 5. Paper-track `titan scan` on a schedule for a meaningful period before
    any capital decision. Synthetic results certify the machinery only.
+
+### From TradingView
+
+TradingView has no public account API, but every chart exports its data:
+
+1. Open the chart, set the timeframe to **1D**, then menu → **Export
+   chart data…** and download the CSV.
+2. Drop the downloaded files into one folder (say `data_tv/`) — **no
+   renaming needed**: TITAN resolves TradingView names like
+   `BINANCE_BTCUSDT, 1D.csv` to the symbol `BTCUSDT` (and `BTC-USD`
+   matches `BITSTAMP_BTCUSD, 1D.csv`). ISO or epoch time columns both
+   parse; rows are sorted before use.
+3. In your config:
+
+   ```yaml
+   data: { provider: csv, csv_dir: data_tv, bars: 2500 }
+   universe:
+     benchmark: SPY          # export SPY too — the benchmark needs a file
+     instruments:
+       - { symbol: BTCUSDT, asset_class: crypto, sector: crypto }
+       # ... one entry per exported chart
+   ```
+
+4. `titan validate --config configs/my-tv.yaml`
+
+Prefer ETFs (SPY/QQQ/DIA) over raw indices — the pipeline requires a
+volume column, which raw index series often lack. Export as much history
+as your TradingView plan allows; fewer than ~1500 daily bars will be
+flagged by QC and below `cv.min_train_bars` the run refuses to start.
 
 ## 7. Tuning the knobs that matter
 
@@ -182,7 +212,7 @@ CLI overrides for quick experiments:
 
 ```bash
 pytest -q -m "not slow"     # fast unit tests (~30 s)
-pytest -q                   # full suite incl. end-to-end (115 tests)
+pytest -q                   # full suite incl. end-to-end (121 tests)
 ruff check src tests scripts
 python -m mypy src/titan
 python scripts/screenshot_dashboard.py   # visual check of the dashboard
