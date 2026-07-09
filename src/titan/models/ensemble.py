@@ -25,7 +25,10 @@ outer walk-forward never sees any of this):
    weights were learned strictly out-of-fold.
 
 ``predict_proba`` returns calibrated P(take-profit before stop); ``uncertainty``
-returns member disagreement (std of member probabilities).
+returns member disagreement (std of member probabilities);
+``probability_interval`` returns the inductive Venn-ABERS band [p0, p1]
+(Vovk & Petej 2014) computed against the pooled OOF scores — a distribution-
+free measure of how much the calibration itself can be trusted at this score.
 """
 
 from __future__ import annotations
@@ -51,6 +54,27 @@ logger = get_logger(__name__)
 
 _MIN_CALIB_ROWS_ISOTONIC = 300
 _WEIGHT_TEMPERATURE = 0.02  # log-loss units; smaller = sharper member weighting
+
+
+def venn_abers_interval(
+    scores: np.ndarray, labels: np.ndarray, s: float
+) -> tuple[float, float]:
+    """Inductive Venn-ABERS interval [p0, p1] for one test score.
+
+    p1 refits isotonic regression on the calibration set plus (s, 1) and
+    reads the fit at s; p0 does the same with (s, 0). The pair brackets the
+    probability with a validity guarantee that holds regardless of the score
+    distribution; the width is honest calibration uncertainty — wide where
+    calibration data is thin, narrow where it is dense.
+    """
+    xs = np.append(scores, s)
+    iso1 = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    iso1.fit(xs, np.append(labels, 1))
+    p1 = float(iso1.predict([s])[0])
+    iso0 = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    iso0.fit(xs, np.append(labels, 0))
+    p0 = float(iso0.predict([s])[0])
+    return min(p0, p1), max(p0, p1)
 
 
 def _sample_params(member: str, rng: np.random.Generator) -> dict[str, Any]:
@@ -164,6 +188,8 @@ class CalibratedEnsemble:
         self._weights: dict[str, float] = {}
         self._calibrator: Any = None
         self._calibration_kind: str = cfg.calibration
+        self._oof_scores: np.ndarray | None = None
+        self._oof_labels: np.ndarray | None = None
         self.feature_names_: list[str] = []
         self.report_: FitReport | None = None
         self.classes_ = np.array([0, 1])
@@ -306,6 +332,9 @@ class CalibratedEnsemble:
         self._fit_calibrator(p_ens, y_oof, report)
         p_final = self._apply_calibrator(p_ens)
         report.calib_brier = float(np.mean((p_final - y_oof) ** 2))
+        # Kept for Venn-ABERS intervals at prediction time.
+        self._oof_scores = p_ens.astype(float)
+        self._oof_labels = y_oof.astype(int)
 
         # ---- 4) refit members on the FULL training window ------------------
         for name in self._cfg.members:
@@ -363,3 +392,27 @@ class CalibratedEnsemble:
     def uncertainty(self, X: pd.DataFrame) -> np.ndarray:
         """Member disagreement: std of member probabilities per row."""
         return self._raw_member_matrix(X).std(axis=1)
+
+    @property
+    def has_intervals(self) -> bool:
+        """False for bundles saved before Venn-ABERS support existed."""
+        return getattr(self, "_oof_scores", None) is not None
+
+    def probability_interval(self, X: pd.DataFrame) -> np.ndarray:
+        """(n, 2) inductive Venn-ABERS band [p0, p1] per row.
+
+        Computed on the raw (pre-calibrator) ensemble score against the
+        pooled OOF calibration sample — the same evidence the isotonic
+        calibrator saw, so the band brackets what that calibration can
+        legitimately claim at this score.
+        """
+        if not self.has_intervals:
+            raise RuntimeError("fit the ensemble before requesting intervals")
+        assert self._oof_scores is not None and self._oof_labels is not None
+        probs = self._raw_member_matrix(X)
+        w = np.array([self._weights[n] for n in self._members])
+        p_raw = probs @ w
+        out = np.empty((len(p_raw), 2), dtype=float)
+        for i, s in enumerate(p_raw):
+            out[i] = venn_abers_interval(self._oof_scores, self._oof_labels, float(s))
+        return out

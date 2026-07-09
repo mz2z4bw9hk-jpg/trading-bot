@@ -68,6 +68,36 @@ def test_uncertainty_gate(gen, frame):
     assert gen.generate(**_kwargs(frame, uncertainty=0.5)) is None
 
 
+def test_conservative_gate_requires_lower_bound_to_clear(gen, frame):
+    """A point estimate above the gate is not enough: p0 must clear it too."""
+    ok = gen.generate(**_kwargs(frame))
+    assert ok is not None
+    tau = ok.threshold_used
+    # tight band comfortably above the gate -> signal, with the band recorded
+    sig = gen.generate(**_kwargs(frame, interval_provider=lambda: (tau + 0.02, 0.80)))
+    assert sig is not None
+    assert sig.probability_low == pytest.approx(tau + 0.02)
+    assert sig.probability_high == 0.80
+    # same point estimate, but the lower bound dips below the gate -> refused
+    assert gen.generate(**_kwargs(frame, interval_provider=lambda: (tau - 0.01, 0.80))) is None
+
+
+def test_conservative_gate_can_be_disabled(frame):
+    gen_off = SignalGenerator(
+        SignalConfig(conservative_gate=False), LabelConfig(), RiskConfig(),
+        CostModel(CostConfig()), max_positions=8,
+    )
+    ok = gen_off.generate(**_kwargs(frame))
+    assert ok is not None
+    sig = gen_off.generate(
+        **_kwargs(frame, interval_provider=lambda: (ok.threshold_used - 0.05, 0.80))
+    )
+    assert sig is not None  # band recorded but not enforced
+    assert sig.probability_low == pytest.approx(ok.threshold_used - 0.05)
+    # a wide band still surfaces as conflicting evidence
+    assert any("calibration band" in c for c in sig.conflicting_evidence)
+
+
 def test_hostile_regime_requires_more_edge(gen):
     # Low sigma keeps the derived threshold above the probability floor, so
     # the regime tightening is visible rather than clipped by the floor.

@@ -7,7 +7,7 @@ numbers are the most common symptom of leakage.
 ## 0. Machinery gates (run on every change, automated)
 
 ```bash
-pytest -q            # 121 tests
+pytest -q            # 133 tests
 ```
 
 - **Causality:** every feature recomputed on truncated history must be
@@ -65,6 +65,10 @@ this order:
 - The champion/challenger gate (`monitor.compare.promotion_gate`) requires
   a paired-bootstrap p-value below `monitor.promotion_p_value`, higher
   Sharpe, and non-degraded drawdown before any model reaches production.
+- The signal gate is cleared at the LOWER Venn-ABERS bound
+  (`signals.conservative_gate`): where calibration evidence is thin, the
+  probability interval widens and marginal signals are refused instead of
+  flattered.
 
 ## 3. Sensitivity analysis (manual, before production)
 
@@ -92,18 +96,25 @@ mean fragility:
    and CV minimums are hard requirements, not suggestions).
 3. Re-run §1 and §3 in full. Synthetic results transfer *zero* evidence to
    real markets — they only certify the machinery.
-4. Paper-track the scanner (`titan scan` on a schedule) for a meaningful
-   period; feed outcomes to `PredictionTracker.resolve` and watch the
-   calibration table and CUSUM alarm.
+4. Paper-track the scanner (`titan scan` on a schedule — every scan logs
+   its predictions automatically) for a meaningful period; run `titan track
+   resolve` to grade them and watch the calibration table and CUSUM alarm.
 5. Only then consider capital, sized by the risk engine, with the drawdown
    throttle live and the crash-regime zero unchallenged.
 
 ## 5. Ongoing monitoring (production)
 
+- **Paper-tracking loop**: `titan scan` logs its predictions; `titan track
+  resolve` grades them with the same triple-barrier labeller that produced
+  the training labels — zero definition drift between what was predicted
+  and what is scored. Rolling Brier is judged against the production
+  model's own OOF Brier.
 - **Feature drift**: PSI vs training reference; warn ≥ 0.10, alert ≥ 0.25
   (`monitor.drift.feature_drift_report`).
 - **Calibration drift**: rolling Brier + calibration table; the CUSUM alarm
-  is the tripwire for slow rot.
+  (`titan track` exit code 3, dashboard panel) is the tripwire for slow
+  rot. It is sized to fire on *sustained* degradation — roughly ten
+  consecutively bad calls — never on one unlucky trade.
 - **Retrain policy**: scheduled retrains produce *candidates*; only the
   promotion gate moves one to production. Manual promotion of an unproven
   model defeats the entire platform — the registry keeps the audit trail

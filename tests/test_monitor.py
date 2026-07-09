@@ -45,7 +45,8 @@ def test_tracker_calibration_and_cusum():
         p = float(rng.uniform(0.4, 0.8))
         tracker.log_prediction(f"d{i}", "AAA", p)
         tracker.resolve(f"d{i}", "AAA", int(rng.random() < p))
-    _alarm_before, _ = tracker.cusum_alarm()
+    alarm_before, _ = tracker.cusum_alarm()
+    assert not alarm_before  # a calibrated stream must not trip the alarm
 
     # broken phase: model says 0.8, world says 20%
     for i in range(150, 260):

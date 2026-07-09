@@ -20,6 +20,7 @@ not marketing.
 | **Volume/participation microstructure proxies** | Amihud (2002) illiquidity; OBV-style flow accumulation | Liquidity features, up/down volume ratio, volume-weighted close-location (institutional accumulation proxy), Amihud measure |
 | **Meta-labelling & event-based labels** | López de Prado, *Advances in Financial ML* (2018) | Triple-barrier labels with event times; purged/embargoed walk-forward; uniqueness weighting; deflated Sharpe |
 | **Ensemble learning + calibration** | Breiman (1996; 2001); Niculescu-Mizil & Caruana (2005) on calibration of boosted trees | Heterogeneous ensemble (HGB/RF/logistic), out-of-fold isotonic calibration, disagreement as uncertainty |
+| **Conformal / Venn prediction** | Vovk & Petej (2014), Venn-ABERS predictors | Distribution-free probability intervals per signal; the gate is cleared at the interval's lower bound |
 | **Fractional Kelly & vol targeting** | Kelly (1956); Thorp (2006); Moreira & Muir (2017) vol-managed portfolios | Position size = min(¼-Kelly, vol-target, fixed-fractional stop risk) |
 | **Block bootstrap inference** | Politis & Romano (1994); Bailey & López de Prado (2014) | Stationary block bootstrap CIs; PSR/DSR multiple-testing control |
 
@@ -112,6 +113,15 @@ flagged by drift reports, not defended by us.
   on the full window, wasting no data. Members with different bias
   structures also give a free uncertainty signal — their disagreement —
   which gates signals independently of the probability level.
+- **Venn-ABERS intervals on the calibration itself** (Vovk & Petej 2014):
+  isotonic calibration returns a point probability with no notion of how
+  much evidence supports it. The inductive Venn-ABERS pair [p0, p1] — two
+  isotonic fits on the pooled OOF sample with the test point labelled 0 and
+  1 respectively — brackets the probability with a distribution-free
+  validity guarantee. The band is wide exactly where OOF evidence is thin.
+  The gate consumes the *lower* bound (`signals.conservative_gate`): a
+  signal that is only positive-EV under the most favorable reading of
+  sparse calibration data is refused.
 - **Derived threshold**: the minimum acceptable probability is computed
   from barrier geometry and the cost model (`p* = (b + c + margin)/(a+b)`),
   not fitted. A fitted threshold is one more overfittable parameter; a

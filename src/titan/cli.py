@@ -11,7 +11,10 @@ Commands
 - ``titan export``    write the dashboard + artifacts as ONE self-contained
   HTML file: open by double-click, share, or drop on any static host — no
   server, no Python needed to view it.
-- ``titan info``      show config, registry and artifact status.
+- ``titan track``     paper-tracking: ``resolve`` grades logged scan
+  predictions against what the market actually did (scans log themselves);
+  ``status`` prints live calibration + the CUSUM decay alarm.
+- ``titan info``      show config, registry, tracking and artifact status.
 """
 
 from __future__ import annotations
@@ -149,12 +152,38 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _paper_store_path(cfg: TitanConfig) -> Path:
+    return Path(cfg.model.store_dir) / "paper_track.json"
+
+
+def _baseline_brier(cfg: TitanConfig) -> float:
+    """CUSUM baseline: the production model's own OOF Brier, else coin-flip."""
+    from titan.models.registry import ModelRegistry
+    from titan.monitor.paper import DEFAULT_BASELINE_BRIER
+
+    try:
+        registry = ModelRegistry(cfg.model.store_dir)
+        version = registry.production_version()
+        if version is None:
+            return DEFAULT_BASELINE_BRIER
+        _, manifest = registry.load(version)
+        return float(manifest.metrics.get("pooled_brier", DEFAULT_BASELINE_BRIER))
+    except Exception:
+        return DEFAULT_BASELINE_BRIER
+
+
+def _write_tracking_artifact(cfg: TitanConfig, out_dir: Path, summary: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "tracking.json").write_text(json.dumps(summary, indent=1, default=str))
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     from titan.artifacts import write_scan_artifacts
     from titan.backtest.costs import CostModel
     from titan.data.store import MarketDataStore
     from titan.features.pipeline import FeatureMatrixBuilder
     from titan.models.registry import ModelRegistry
+    from titan.monitor.paper import PaperTrackingStore
     from titan.regime.detector import RegimeDetector
     from titan.scanner.scanner import MarketScanner
     from titan.signals.generator import SignalGenerator
@@ -188,10 +217,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
     scan = scanner.scan(dataset, panel)
     out = write_scan_artifacts(Path(args.out or cfg.run.artifacts_dir), scan)
+
+    # Paper-track every emitted signal; `titan track resolve` grades them later.
+    store = PaperTrackingStore(_paper_store_path(cfg))
+    n_tracked = store.log_signals(scan.signals)
+    _write_tracking_artifact(cfg, out, store.summary(_baseline_brier(cfg)))
+
     print(json.dumps({
         "date": str(scan.date.date()),
         "regime": scan.regime.regime.value,
         "n_signals": len(scan.signals),
+        "newly_tracked": n_tracked,
         "top": [
             {"symbol": s.symbol, "grade": s.trade_grade.value,
              "confidence": round(s.confidence_score, 1)}
@@ -235,11 +271,45 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_track(args: argparse.Namespace) -> int:
+    from titan.monitor.paper import PaperTrackingStore
+
+    cfg = _load_cfg(args)
+    store = PaperTrackingStore(_paper_store_path(cfg))
+
+    n_resolved = 0
+    if args.action == "resolve":
+        from titan.data.store import MarketDataStore
+
+        dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
+        n_resolved = store.resolve(dataset.frames, cfg.labels)
+
+    summary = store.summary(_baseline_brier(cfg))
+    out_dir = Path(args.out or cfg.run.artifacts_dir)
+    _write_tracking_artifact(cfg, out_dir, summary)
+    print(json.dumps({"newly_resolved": n_resolved, **summary}, indent=1, default=str))
+    if summary.get("cusum_alarm"):
+        print(
+            "CUSUM ALARM: live calibration is degrading — run `titan validate` "
+            "to produce a challenger and let the promotion gate decide.",
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     from titan.models.registry import ModelRegistry
+    from titan.monitor.paper import PaperTrackingStore
 
     cfg = _load_cfg(args)
     registry = ModelRegistry(cfg.model.store_dir)
+    store_path = _paper_store_path(cfg)
+    tracking = None
+    if store_path.exists():
+        s = PaperTrackingStore(store_path).summary(_baseline_brier(cfg))
+        tracking = {k: s[k] for k in
+                    ("n_predictions", "n_resolved", "n_open", "hit_rate", "cusum_alarm")}
     print(json.dumps({
         "version": __version__,
         "provider": cfg.data.provider,
@@ -247,6 +317,7 @@ def cmd_info(args: argparse.Namespace) -> int:
         "benchmark": cfg.universe.benchmark,
         "models": [m.to_dict() for m in registry.history()],
         "production": registry.production_version(),
+        "paper_tracking": tracking,
         "artifacts_dir": str(Path(cfg.run.artifacts_dir).resolve()),
     }, indent=1, default=str))
     return 0
@@ -289,6 +360,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--artifacts", help="artifacts dir to export (default: config artifacts_dir)")
     p_exp.add_argument("--out", help="output HTML path (default: <artifacts>/titan_dashboard.html)")
     p_exp.set_defaults(func=cmd_export)
+
+    p_track = sub.add_parser(
+        "track", help="paper-tracking: grade logged predictions, show live calibration"
+    )
+    p_track.add_argument(
+        "action", choices=["resolve", "status"],
+        help="resolve = fetch data and grade elapsed predictions; status = report only",
+    )
+    p_track.add_argument("--config", help="YAML config path")
+    p_track.add_argument("--out", help="artifacts dir for tracking.json (default: config artifacts_dir)")
+    p_track.set_defaults(func=cmd_track)
 
     p_info = sub.add_parser("info", help="show platform status")
     p_info.add_argument("--config", help="YAML config path")

@@ -153,6 +153,10 @@ class SignalConfig(BaseModel):
     ev_margin_bps: float = Field(5.0, ge=0)
     analogue_k: int = Field(50, ge=10)
     max_uncertainty: float = Field(0.25, gt=0)
+    # Require the LOWER Venn-ABERS probability bound to clear the adaptive
+    # gate, not just the point estimate: a signal that only exists if thin
+    # calibration data is taken on faith does not deserve to exist.
+    conservative_gate: bool = True
     grade_thresholds: dict[str, float] = Field(
         default_factory=lambda: {"A+": 85.0, "A": 75.0, "B+": 65.0, "B": 55.0}
     )

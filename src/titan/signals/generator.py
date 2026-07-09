@@ -6,16 +6,21 @@ A signal exists only if ALL of the following hold:
    probability implied by the barrier geometry AND realistic costs, plus a
    configured margin, raised further in hostile regimes. The threshold is
    derived, not hand-tuned.
-2. Expected value after costs is positive by at least the margin.
-3. Ensemble disagreement is below the uncertainty ceiling.
-4. The composite confidence score reaches at least grade B.
-5. The risk engine assigns a positive size (crash regime alone zeroes it).
+2. With ``signals.conservative_gate`` (the default), the LOWER Venn-ABERS
+   probability bound clears the same threshold — the trade must survive the
+   calibration's own uncertainty, not just its point estimate.
+3. Expected value after costs is positive by at least the margin.
+4. Ensemble disagreement is below the uncertainty ceiling.
+5. The composite confidence score reaches at least grade B.
+6. The risk engine assigns a positive size (crash regime alone zeroes it).
 
 Everything else in this module is packaging: prices, sizes, analogue
 statistics, and the evidence for and against the call.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -88,10 +93,14 @@ class SignalGenerator:
         reliability: float = 1.0,
         explainer: LocalExplainer | None = None,
         model_version: str = "",
+        interval_provider: Callable[[], tuple[float, float]] | None = None,
     ) -> Signal | None:
         """Build a signal for one (symbol, date) candidate, or return None.
 
         ``frame`` must contain history up to and including the decision bar.
+        ``interval_provider`` lazily supplies the Venn-ABERS band (p0, p1);
+        it is only invoked once the cheap gates pass, and when present the
+        conservative gate requires p0 to clear the adaptive threshold.
         """
         if regime is Regime.CRASH:
             return None
@@ -116,6 +125,18 @@ class SignalGenerator:
         ev = probability * a - (1.0 - probability) * b - cost
         if ev < self._cfg.ev_margin_bps / 1e4:
             return None
+
+        # Venn-ABERS band, computed lazily only for survivors of the cheap
+        # gates. The conservative gate re-tests the threshold at the LOWER
+        # bound: p >= tau already encodes EV >= margin, so p0 >= tau means
+        # the trade is positive-EV even under the least favorable reading of
+        # the calibration evidence.
+        p_low: float | None = None
+        p_high: float | None = None
+        if interval_provider is not None:
+            p_low, p_high = interval_provider()
+            if self._cfg.conservative_gate and p_low < tau:
+                return None
 
         similarity = analogue.similarity if analogue else 0.5
         confidence = self._confidence(probability, tau, uncertainty, similarity, reliability)
@@ -171,6 +192,11 @@ class SignalGenerator:
             conflicting.append(f"hostile regime ({regime.value}): threshold tightened")
         if uncertainty > 0.6 * self._cfg.max_uncertainty:
             conflicting.append(f"elevated model disagreement ({uncertainty:.2f})")
+        if p_low is not None and p_high is not None and (p_high - p_low) > 0.08:
+            conflicting.append(
+                f"wide calibration band [{p_low:.0%}, {p_high:.0%}]: "
+                "sparse OOF evidence near this score"
+            )
         if reliability < 0.9:
             conflicting.append(f"data reliability {reliability:.2f}")
 
@@ -196,6 +222,8 @@ class SignalGenerator:
             side=Side.LONG,
             model_version=model_version,
             probability=probability,
+            probability_low=p_low,
+            probability_high=p_high,
             uncertainty=uncertainty,
             confidence_score=confidence,
             trade_grade=grade,

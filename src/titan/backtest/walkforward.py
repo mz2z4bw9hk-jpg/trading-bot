@@ -19,6 +19,7 @@ in the report ever saw its own training data.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,18 @@ from titan.signals.generator import SignalGenerator
 from titan.signals.schema import Signal
 
 logger = get_logger(__name__)
+
+
+def _lazy_interval(
+    ensemble: CalibratedEnsemble, row_frame: pd.DataFrame
+) -> Callable[[], tuple[float, float]]:
+    """Venn-ABERS band for one candidate, deferred until the cheap gates pass."""
+
+    def provide() -> tuple[float, float]:
+        band = ensemble.probability_interval(row_frame)[0]
+        return float(band[0]), float(band[1])
+
+    return provide
 
 
 @dataclass(slots=True)
@@ -262,6 +275,7 @@ class WalkForwardRunner:
                 if not np.isfinite(sigma_v):
                     continue
                 frame_slice = dataset.frames[sym].loc[:ts]
+                row_frame = Xte.loc[[(ts, sym)], selected]
                 signal = generator.generate(
                     symbol=sym,
                     date=ts,
@@ -276,6 +290,7 @@ class WalkForwardRunner:
                     reliability=float(reliability.get((ts, sym), 1.0)),
                     explainer=explainer,
                     model_version=f"wf_fold{fold.fold}",
+                    interval_provider=_lazy_interval(ensemble, row_frame),
                 )
                 if signal is None:
                     continue

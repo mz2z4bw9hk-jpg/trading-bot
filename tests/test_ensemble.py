@@ -8,7 +8,7 @@ import pytest
 from sklearn.metrics import roc_auc_score
 
 from titan.core.config import ModelConfig
-from titan.models.ensemble import CalibratedEnsemble
+from titan.models.ensemble import CalibratedEnsemble, venn_abers_interval
 
 
 def _make_data(n=3000, n_feat=8, signal=1.2, seed=0):
@@ -157,3 +157,54 @@ def test_oof_report_semantics(fitted):
     assert r.n_fit == 2400              # entire training window
     assert 0 < r.n_calib < r.n_fit      # OOF pool is a strict subset
     assert np.isfinite(r.calib_brier)
+
+
+# ---------------------------------------------------------------------- #
+# Venn-ABERS intervals
+
+
+def test_venn_abers_point_properties():
+    rng = np.random.default_rng(11)
+    scores = rng.uniform(0, 1, 800)
+    labels = (rng.uniform(0, 1, 800) < scores).astype(int)  # perfectly calibrated world
+    prev = (0.0, 0.0)
+    for s in (0.1, 0.3, 0.5, 0.7, 0.9):
+        p0, p1 = venn_abers_interval(scores, labels, s)
+        assert 0.0 <= p0 <= p1 <= 1.0
+        # roughly recovers the true probability and is monotone in the score
+        assert p0 - 0.12 <= s <= p1 + 0.12
+        assert p0 >= prev[0] - 1e-9 and p1 >= prev[1] - 1e-9
+        prev = (p0, p1)
+
+
+def test_venn_abers_band_tightens_with_evidence():
+    """More calibration data at a score = narrower band there."""
+    rng = np.random.default_rng(7)
+
+    def width(n: int) -> float:
+        scores = rng.uniform(0, 1, n)
+        labels = (rng.uniform(0, 1, n) < scores).astype(int)
+        p0, p1 = venn_abers_interval(scores, labels, 0.6)
+        return p1 - p0
+
+    assert width(2000) < width(60)
+
+
+def test_ensemble_interval_brackets_prediction(fitted):
+    model, X_te, _ = fitted
+    sample = X_te.head(40)
+    bands = model.probability_interval(sample)
+    assert bands.shape == (40, 2)
+    assert (bands[:, 0] <= bands[:, 1] + 1e-12).all()
+    assert ((bands >= 0) & (bands <= 1)).all()
+    # a fitted model on 2400 rows should not produce degenerate full-width bands
+    assert float(np.median(bands[:, 1] - bands[:, 0])) < 0.25
+
+
+def test_interval_requires_fit():
+    model = CalibratedEnsemble(
+        ModelConfig(members=["logistic"], tuning_iterations=0), horizon_bars=5
+    )
+    assert not model.has_intervals
+    with pytest.raises(RuntimeError, match="fit"):
+        model.probability_interval(pd.DataFrame({"f0": [0.0]}))

@@ -16,7 +16,7 @@ evidence trail behind them.
 
 | Claim | Status |
 |---|---|
-| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 121 automated tests, incl. leak-detection and hand-computed accounting checks |
+| Pipeline correctness (causality, purging, accounting, calibration) | **Verified** — 133 automated tests, incl. leak-detection and hand-computed accounting checks |
 | Statistical machinery (walk-forward, bootstrap CIs, PSR/DSR, drift) | **Implemented and tested** |
 | Edge on real markets | **Not claimed.** The default config runs on a synthetic regime-switching market with *known planted structure* so the whole system is verifiable offline. Connect real data and run the full protocol in `docs/VALIDATION.md` before believing anything. |
 | Execution / brokerage | Out of scope by design |
@@ -57,14 +57,22 @@ raw OHLCV ──► quality gates ──► causal features (~70, 8 families)
               artifacts ──► dashboard / registry / drift monitors
 ```
 
-Every signal carries: calibrated probability, ensemble disagreement,
-confidence score (0–100), trade grade (A+/A/B+/B), entry zone + limit/market
-prices, sigma- and ATR-stops, three take-profit levels, position size and
-risk-%, expected holding period and volatility, MAE/MFE estimates from its
-k-nearest historical analogues, outcome quantiles, regime context,
-institutional-accumulation score, top feature contributions, supporting and
-conflicting evidence, and a plain-English reasoning summary. Signals with
-negative expected value after costs **do not exist**.
+Every signal carries: calibrated probability **with its Venn-ABERS interval**
+(the gate must be cleared by the interval's *lower* bound — a signal that
+only exists if thin calibration evidence is taken on faith is refused),
+ensemble disagreement, confidence score (0–100), trade grade (A+/A/B+/B),
+entry zone + limit/market prices, sigma- and ATR-stops, three take-profit
+levels, position size and risk-%, expected holding period and volatility,
+MAE/MFE estimates from its k-nearest historical analogues, outcome
+quantiles, regime context, institutional-accumulation score, top feature
+contributions, supporting and conflicting evidence, and a plain-English
+reasoning summary. Signals with negative expected value after costs
+**do not exist**.
+
+Every scan **paper-tracks itself**: predictions land in an append-only log,
+`titan track resolve` grades them with the exact triple-barrier labeller the
+models were trained on, and a CUSUM alarm on live calibration fires long
+before decay shows up in PnL.
 
 ## Quickstart
 
@@ -88,14 +96,17 @@ titan dashboard --port 8321        # http://127.0.0.1:8321
 # double-click, no server or Python needed to view, hosts anywhere
 titan export                       # -> artifacts/titan_dashboard.html
 
-# rank the universe with the current production model
+# rank the universe with the current production model (auto-logs predictions)
 titan scan
 
-# platform / registry status
+# grade logged predictions against realized barriers; live calibration + CUSUM
+titan track resolve
+
+# platform / registry / paper-tracking status
 titan info
 
 # tests & lint  (negative control lives here: shuffled labels => AUC ~0.5)
-pytest -q          # 121 tests; -m "not slow" for the fast subset
+pytest -q          # 133 tests; -m "not slow" for the fast subset
 ruff check src tests
 ```
 
@@ -134,19 +145,20 @@ src/titan/
   data/             providers (synthetic/yahoo/csv), QC + reliability scoring, store
   features/         causal feature registry, families, redundancy pruning, importance
   labels/           triple-barrier labelling, uniqueness weights
-  models/           purged walk-forward CV, calibrated ensemble, model registry
+  models/           purged walk-forward CV, calibrated ensemble (+ Venn-ABERS
+                    probability intervals), model registry
   regime/           GMM + rules regime detector (9 regimes + vol overlay)
   backtest/         cost model, event-driven engine, metrics, Monte Carlo, walk-forward
   risk/             sizing rules and portfolio-level risk engine
   signals/          analogue index, signal generator, schema
   explain/          median-counterfactual local explanations
   scanner/          universe ranking with rejection reasons
-  monitor/          PSI drift, prediction tracking, champion/challenger gate
+  monitor/          PSI drift, paper-tracking + CUSUM, champion/challenger gate
   server/           FastAPI + self-contained dashboard (dark/light, responsive)
                     + one-file static export (payloads.py keeps both identical)
-  cli.py            validate / scan / dashboard / export / info
+  cli.py            validate / scan / dashboard / export / track / info
   artifacts.py      research outputs -> auditable files
-tests/              121 tests: causality, leakage, accounting, calibration, e2e
+tests/              133 tests: causality, leakage, accounting, calibration, e2e
 docs/               USER_GUIDE.md, RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
 ```
 
@@ -160,7 +172,9 @@ docs/               USER_GUIDE.md, RESEARCH.md, ARCHITECTURE.md, VALIDATION.md
   moment a fill exists, gaps through a level invalidate the plan, and when
   capacity binds the highest-confidence candidates take the slots.
 - **Calibration over accuracy** — position sizing consumes probabilities;
-  an uncalibrated 0.7 is a lie that costs money.
+  an uncalibrated 0.7 is a lie that costs money. Venn-ABERS intervals put
+  distribution-free error bars on the calibration itself, and the gate is
+  cleared at the interval's lower bound.
 - **The gate is derived, not tuned** — the signal threshold is the
   break-even probability implied by barrier geometry and costs, plus margin,
   tightened in hostile regimes.

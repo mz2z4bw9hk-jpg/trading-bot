@@ -191,6 +191,15 @@
     <div class="note">Consistency across regimes matters more than any single number above.</div>
   </section>
 
+  <section class="card c6" id="tracking-card" hidden>
+    <h2>Paper tracking — live calibration</h2>
+    <div class="kpis" id="tracking-kpis"></div>
+    <div class="scroll-x"><table id="tracking-table"></table></div>
+    <div class="note">Scans log their predictions; <code>titan track resolve</code> grades them
+      against realized barriers. The CUSUM alarm fires on slow calibration rot
+      long before the PnL makes it obvious.</div>
+  </section>
+
   <section class="card">
     <h2>Universe & data quality</h2>
     <div class="scroll-x"><table id="universe-table"></table></div>
@@ -422,14 +431,14 @@ function heatmap(el, symbols, matrix) {
 /* ---------- data + render ---------- */
 let DATA = {};
 async function loadAll() {
-  const [report, equity, regimes, scan, importance, universe, corr, manifest, quality] =
+  const [report, equity, regimes, scan, importance, universe, corr, manifest, quality, tracking] =
     await Promise.all([
       getJSON("/api/report"), getJSON("/api/equity"), getJSON("/api/regimes"),
       getJSON("/api/scan"), getJSON("/api/importance"),
       getJSON("/api/universe"), getJSON("/api/correlation"), getJSON("/api/manifest"),
-      getJSON("/api/quality"),
+      getJSON("/api/quality"), getJSON("/api/tracking"),
     ]);
-  DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality};
+  DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality, tracking};
   render();
 }
 
@@ -489,11 +498,13 @@ function render() {
     $("#pill-regime").innerHTML = `regime: <b>${esc(scan.regime.regime)}</b> (${fmtPct(scan.regime.confidence,0)})`;
     $("#scan-meta").textContent = `scan date ${scan.date} · volatility ${scan.regime.vol_state.replace("_"," ")}`;
     const gradeCls = g => ({"A+":"aplus","A":"a","B+":"bplus","B":"b"}[g]||"rej");
+    const band = r => (r.probability_low==null) ? "" :
+      ` <span style="color:var(--ink-mut)">[${(100*r.probability_low).toFixed(0)}–${(100*r.probability_high).toFixed(0)}]</span>`;
     $("#scan-table").innerHTML = `
-      <tr><th class="num">#</th><th>Symbol</th><th class="num">P(hit)</th><th class="num">Disagree</th><th>Status</th></tr>` +
+      <tr><th class="num">#</th><th>Symbol</th><th class="num">P(hit) · VA band</th><th class="num">Disagree</th><th>Status</th></tr>` +
       scan.rows.map(r => `<tr>
         <td class="num">${r.rank}</td><td><b>${esc(r.symbol)}</b></td>
-        <td class="num">${fmtPct(r.probability)}</td><td class="num">${fmtNum(r.uncertainty,3)}</td>
+        <td class="num">${fmtPct(r.probability)}${band(r)}</td><td class="num">${fmtNum(r.uncertainty,3)}</td>
         <td>${r.status==="signal"
             ? `<span class="chip ${gradeCls(r.grade)}">${esc(r.grade)}</span> <span class="t2">conf ${r.confidence.toFixed(0)}</span>`
             : `<span class="chip rej">${esc(r.status)}</span>`}</td>
@@ -503,7 +514,8 @@ function render() {
         <div class="head"><span class="sym">${esc(s.symbol)}</span>
           <span class="chip ${gradeCls(s.trade_grade)}">${esc(s.trade_grade)}</span>
           <span class="chip">${esc(s.market_regime)}</span>
-          <span class="conf">conf ${s.confidence_score.toFixed(0)} · P ${fmtPct(s.probability)}</span></div>
+          <span class="conf">conf ${s.confidence_score.toFixed(0)} · P ${fmtPct(s.probability)}${
+            s.probability_low!=null ? ` [${(100*s.probability_low).toFixed(0)}–${(100*s.probability_high).toFixed(0)}]` : ""}</span></div>
         <dl>
           <dt>Entry zone</dt><dd>${s.entry_zone[0].toFixed(2)}–${s.entry_zone[1].toFixed(2)}</dd>
           <dt>Limit / mkt</dt><dd>${s.optimal_limit_entry.toFixed(2)} / ${s.market_entry.toFixed(2)}</dd>
@@ -549,6 +561,25 @@ function render() {
       Object.entries(rb).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${v.days}</td>
         <td class="num">${fmtPct(v.ann_return)}</td><td class="num">${fmtNum(v.sharpe)}</td></tr>`).join("") ||
       `<tr><td class="empty">no data</td></tr>`;
+  }
+  /* paper tracking */
+  const trk = DATA.tracking;
+  if (trk && trk.n_predictions > 0) {
+    $("#tracking-card").hidden = false;
+    const k = (label, val, cls="") => `<div class="kpi"><div class="v ${cls}">${val}</div><div class="l">${label}</div></div>`;
+    $("#tracking-kpis").innerHTML =
+      k("Logged", trk.n_predictions) +
+      k("Resolved", trk.n_resolved) +
+      k("Open", trk.n_open ?? (trk.n_predictions - trk.n_resolved)) +
+      k("Hit rate", trk.hit_rate!=null ? fmtPct(trk.hit_rate) : "—") +
+      k("Rolling Brier", fmtNum(trk.rolling_brier_100,3)) +
+      k("Baseline Brier", fmtNum(trk.baseline_brier,3)) +
+      k("CUSUM", trk.cusum_alarm ? "ALARM" : "ok", trk.cusum_alarm ? "down" : "up");
+    const cal = trk.calibration || [];
+    $("#tracking-table").innerHTML = !cal.length ? "" : `
+      <tr><th>Predicted bin</th><th class="num">N</th><th class="num">Mean P</th><th class="num">Realized</th></tr>` +
+      cal.map(b => `<tr><td>${esc(b.bin)}</td><td class="num">${b.n}</td>
+        <td class="num">${fmtPct(b.mean_p)}</td><td class="num">${fmtPct(b.hit_rate)}</td></tr>`).join("");
   }
   /* universe */
   if (DATA.universe && DATA.quality) {

@@ -12,6 +12,7 @@ operator nothing about the gate.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -31,12 +32,21 @@ from titan.signals.schema import Signal
 logger = get_logger(__name__)
 
 
+def _fixed_band(b: tuple[float, float]) -> Callable[[], tuple[float, float]]:
+    def provide() -> tuple[float, float]:
+        return b
+
+    return provide
+
+
 @dataclass(slots=True)
 class ScanRow:
     symbol: str
     probability: float
     uncertainty: float
     status: str          # "signal" or the rejection reason
+    probability_low: float | None = None   # Venn-ABERS band, when available
+    probability_high: float | None = None
     confidence: float = 0.0
     grade: str = ""
     rank: int = 0
@@ -46,6 +56,8 @@ class ScanRow:
             "rank": self.rank,
             "symbol": self.symbol,
             "probability": round(self.probability, 4),
+            "probability_low": None if self.probability_low is None else round(self.probability_low, 4),
+            "probability_high": None if self.probability_high is None else round(self.probability_high, 4),
             "uncertainty": round(self.uncertainty, 4),
             "status": self.status,
             "confidence": round(self.confidence, 1),
@@ -99,12 +111,22 @@ class MarketScanner:
         X_sel = X_last.reindex(columns=self._selected)
         probs = self._ensemble.predict_proba(X_sel)[:, 1]
         uncs = self._ensemble.uncertainty(X_sel)
+        # A scan is a handful of rows, so every instrument gets its band —
+        # older registry bundles saved before interval support degrade to None.
+        bands = self._ensemble.probability_interval(X_sel) if self._ensemble.has_intervals else None
 
         rows: list[ScanRow] = []
         signals: list[Signal] = []
         for i, sym in enumerate(X_sel.index):
             p, unc = float(probs[i]), float(uncs[i])
-            row = ScanRow(symbol=str(sym), probability=p, uncertainty=unc, status="")
+            band: tuple[float, float] | None = (
+                (float(bands[i][0]), float(bands[i][1])) if bands is not None else None
+            )
+            row = ScanRow(
+                symbol=str(sym), probability=p, uncertainty=unc, status="",
+                probability_low=band[0] if band else None,
+                probability_high=band[1] if band else None,
+            )
             if snapshot.regime is Regime.CRASH:
                 row.status = "blocked: crash regime"
             elif p < self._cfg.signals.min_probability:
@@ -126,6 +148,7 @@ class MarketScanner:
                     reliability=float(dataset.reliability.get(str(sym), 1.0)),
                     explainer=self._explainer,
                     model_version="scanner",
+                    interval_provider=_fixed_band(band) if band is not None else None,
                 )
                 if signal is None:
                     row.status = "failed adaptive EV gate"

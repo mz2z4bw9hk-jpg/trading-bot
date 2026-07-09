@@ -89,8 +89,14 @@ class PredictionTracker:
     """Append-only log of live predictions with rolling quality metrics."""
 
     baseline_brier: float
-    cusum_k: float = 0.005   # slack per observation before drift accumulates
-    cusum_h: float = 0.15    # alarm threshold on the cumulative excess
+    # Per-prediction squared error lives in [0, 1] with sd ~0.2 even for a
+    # perfectly calibrated stream, so the alarm must demand SUSTAINED excess,
+    # never one unlucky trade. Standard CUSUM sizing: k ~ half the shift
+    # worth detecting (~0.5 sd), h ~ several sd of cumulative noise — a
+    # genuinely broken model (say p=0.8 calls hitting 20%) alarms within
+    # ~10-15 resolved predictions; a calibrated stream essentially never.
+    cusum_k: float = 0.10    # slack per observation before drift accumulates
+    cusum_h: float = 2.00    # alarm threshold on the cumulative excess
     records: list[PredictionRecord] = field(default_factory=list)
 
     def log_prediction(self, date: str, symbol: str, probability: float) -> None:

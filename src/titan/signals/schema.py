@@ -24,6 +24,8 @@ class Signal:
 
     # probability & confidence -------------------------------------------
     probability: float = 0.0          # calibrated P(tp before stop)
+    probability_low: float | None = None   # Venn-ABERS lower bound (p0)
+    probability_high: float | None = None  # Venn-ABERS upper bound (p1)
     uncertainty: float = 0.0          # ensemble disagreement (std of members)
     confidence_score: float = 0.0     # 0-100 composite
     trade_grade: TradeGrade = TradeGrade.B
@@ -74,6 +76,8 @@ class Signal:
             "side": self.side.value,
             "model_version": self.model_version,
             "probability": round(self.probability, 4),
+            "probability_low": None if self.probability_low is None else round(self.probability_low, 4),
+            "probability_high": None if self.probability_high is None else round(self.probability_high, 4),
             "uncertainty": round(self.uncertainty, 4),
             "confidence_score": round(self.confidence_score, 1),
             "trade_grade": self.trade_grade.value,

@@ -90,6 +90,10 @@ How to read it:
 - **P** is a *calibrated* probability that price hits +2σ before −1.5σ
   within the horizon, entering at the next open. It already cleared an
   adaptive threshold derived from costs — not a hand-tuned constant.
+- The **[lo–hi] band** after P is the Venn-ABERS interval: distribution-free
+  error bars on the calibration itself. The gate is cleared by the *lower*
+  bound (`signals.conservative_gate`), so a wide band near the threshold
+  kills the signal rather than flattering it.
 - **EV** is expected value *after* commission, spread and impact. If it
   weren't positive, the signal would not exist.
 - **Size** is the minimum of ¼-Kelly, vol-targeting and fixed-fractional
@@ -105,8 +109,9 @@ How to read it:
 ## 5. Daily operation
 
 ```bash
-titan scan                    # rank the universe with the production model
-titan info                    # registry status, production version, universe
+titan scan                    # rank the universe; auto-logs its predictions
+titan track resolve           # grade elapsed predictions against real bars
+titan info                    # registry, production version, tracking status
 titan dashboard --port 8321   # always reads the latest artifacts
 titan export                  # one static HTML file of the same dashboard
 ```
@@ -188,14 +193,25 @@ CLI overrides for quick experiments:
 
 ## 8. Monitoring a deployed model
 
-- **Feature drift**: `titan.monitor.feature_drift_report(X_train_ref,
-  X_live)` — PSI ≥ 0.25 on a model feature means the world changed;
-  retrain.
-- **Calibration drift**: feed realized outcomes to a `PredictionTracker`
-  (`log_prediction` at scan time, `resolve` when the event closes). The
-  CUSUM alarm fires on slow rot long before the PnL makes it obvious.
-- On alarm: run `validate` to produce a challenger; let the promotion gate
-  decide. Never hand-promote.
+Paper-tracking is built into the daily loop — no code needed:
+
+1. `titan scan` logs every emitted signal to
+   `models_store/paper_track.json` automatically (idempotent per
+   symbol+date, so re-scanning is safe).
+2. `titan track resolve` — run it any day — fetches current data and grades
+   every prediction whose horizon has elapsed, using the *exact*
+   triple-barrier labeller the models were trained on. Exit code 3 means
+   the CUSUM alarm fired.
+3. `titan track status` (or the dashboard's *Paper tracking* panel) shows
+   logged/resolved counts, hit rate, rolling Brier vs the production
+   model's own OOF baseline, and the calibration table.
+
+On a CUSUM alarm: run `validate` to produce a challenger; let the promotion
+gate decide. Never hand-promote.
+
+- **Feature drift** stays available as a library call:
+  `titan.monitor.feature_drift_report(X_train_ref, X_live)` — PSI ≥ 0.25 on
+  a model feature means the world changed; retrain.
 
 ## 9. Troubleshooting
 
@@ -206,13 +222,15 @@ CLI overrides for quick experiments:
 | `training window too small` | not enough history for `cv.min_train_bars` / internal folds — more bars or fewer folds |
 | Instrument missing from results | failed QC; see `artifacts/quality.json` and the log line explaining why |
 | Yahoo fetch fails | no network egress from your environment; use `csv` |
+| `titan track resolve` exits 3 | that IS the CUSUM alarm — run `validate` to produce a challenger and let the promotion gate decide |
+| Signal shows a wide P band | thin calibration evidence near that score; the conservative gate already priced that in |
 | Slow validate | lower `tuning_iterations` / `internal_folds`, or trim `members` |
 
 ## 10. Development loop
 
 ```bash
 pytest -q -m "not slow"     # fast unit tests (~30 s)
-pytest -q                   # full suite incl. end-to-end (121 tests)
+pytest -q                   # full suite incl. end-to-end (133 tests)
 ruff check src tests scripts
 python -m mypy src/titan
 python scripts/screenshot_dashboard.py   # visual check of the dashboard
