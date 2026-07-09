@@ -53,12 +53,16 @@ logger = get_logger(__name__)
 
 
 def _lazy_interval(
-    ensemble: CalibratedEnsemble, row_frame: pd.DataFrame
+    ensemble: CalibratedEnsemble, raw_score: float
 ) -> Callable[[], tuple[float, float]]:
-    """Venn-ABERS band for one candidate, deferred until the cheap gates pass."""
+    """Venn-ABERS band for one candidate, deferred until the cheap gates pass.
+
+    Takes the candidate's precomputed raw ensemble score (batched once per
+    fold) so the deferred work is only the two isotonic fits.
+    """
 
     def provide() -> tuple[float, float]:
-        band = ensemble.probability_interval(row_frame)[0]
+        band = ensemble.interval_for_scores(np.array([raw_score]))[0]
         return float(band[0]), float(band[1])
 
     return provide
@@ -224,6 +228,7 @@ class WalkForwardRunner:
 
             p_te = ensemble.predict_proba(Xte[selected])[:, 1]
             unc_te = ensemble.uncertainty(Xte[selected])
+            raw_te = ensemble.raw_scores(Xte[selected])
             auc = float(roc_auc_score(yte, p_te)) if yte.nunique() > 1 else float("nan")
             brier = float(np.mean((p_te - yte.to_numpy()) ** 2))
             ll = float(log_loss(yte, np.clip(p_te, 1e-6, 1 - 1e-6)))
@@ -254,6 +259,7 @@ class WalkForwardRunner:
             test_index = Xte.index
             p_series = pd.Series(p_te, index=test_index)
             unc_series = pd.Series(unc_te, index=test_index)
+            raw_series = pd.Series(raw_te, index=test_index)
             for (ts, sym) in test_index:
                 p = float(p_series[(ts, sym)])
                 decision_rows.append(
@@ -275,7 +281,6 @@ class WalkForwardRunner:
                 if not np.isfinite(sigma_v):
                     continue
                 frame_slice = dataset.frames[sym].loc[:ts]
-                row_frame = Xte.loc[[(ts, sym)], selected]
                 signal = generator.generate(
                     symbol=sym,
                     date=ts,
@@ -290,7 +295,7 @@ class WalkForwardRunner:
                     reliability=float(reliability.get((ts, sym), 1.0)),
                     explainer=explainer,
                     model_version=f"wf_fold{fold.fold}",
-                    interval_provider=_lazy_interval(ensemble, row_frame),
+                    interval_provider=_lazy_interval(ensemble, float(raw_series[(ts, sym)])),
                 )
                 if signal is None:
                     continue

@@ -28,3 +28,4 @@ models_store/
 .vscode/
 artifacts_run.log
 control_run.log
+artifacts_*/

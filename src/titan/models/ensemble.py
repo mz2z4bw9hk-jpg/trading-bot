@@ -54,6 +54,7 @@ logger = get_logger(__name__)
 
 _MIN_CALIB_ROWS_ISOTONIC = 300
 _WEIGHT_TEMPERATURE = 0.02  # log-loss units; smaller = sharper member weighting
+_MAX_VA_CALIBRATION = 4096  # Venn-ABERS calibration-sample cap (see fit())
 
 
 def venn_abers_interval(
@@ -332,9 +333,18 @@ class CalibratedEnsemble:
         self._fit_calibrator(p_ens, y_oof, report)
         p_final = self._apply_calibrator(p_ens)
         report.calib_brier = float(np.mean((p_final - y_oof) ** 2))
-        # Kept for Venn-ABERS intervals at prediction time.
+        # Kept for Venn-ABERS intervals at prediction time. Each interval
+        # query refits isotonic on this sample (O(n log n)), and beyond a few
+        # thousand points the band stops moving while the cost keeps growing —
+        # so cap it with a seeded subsample.
         self._oof_scores = p_ens.astype(float)
         self._oof_labels = y_oof.astype(int)
+        if len(self._oof_scores) > _MAX_VA_CALIBRATION:
+            sub = np.random.default_rng(self._seed).choice(
+                len(self._oof_scores), _MAX_VA_CALIBRATION, replace=False
+            )
+            self._oof_scores = self._oof_scores[sub]
+            self._oof_labels = self._oof_labels[sub]
 
         # ---- 4) refit members on the FULL training window ------------------
         for name in self._cfg.members:
@@ -398,6 +408,26 @@ class CalibratedEnsemble:
         """False for bundles saved before Venn-ABERS support existed."""
         return getattr(self, "_oof_scores", None) is not None
 
+    def raw_scores(self, X: pd.DataFrame) -> np.ndarray:
+        """Pre-calibration weighted member blend — the Venn-ABERS score axis.
+
+        Batch this once per prediction frame; per-row member predictions are
+        two orders of magnitude slower than one vectorized pass.
+        """
+        probs = self._raw_member_matrix(X)
+        w = np.array([self._weights[n] for n in self._members])
+        return np.asarray(probs @ w, dtype=float)
+
+    def interval_for_scores(self, scores: np.ndarray) -> np.ndarray:
+        """(n, 2) Venn-ABERS band [p0, p1] for precomputed raw scores."""
+        if not self.has_intervals:
+            raise RuntimeError("fit the ensemble before requesting intervals")
+        assert self._oof_scores is not None and self._oof_labels is not None
+        out = np.empty((len(scores), 2), dtype=float)
+        for i, s in enumerate(scores):
+            out[i] = venn_abers_interval(self._oof_scores, self._oof_labels, float(s))
+        return out
+
     def probability_interval(self, X: pd.DataFrame) -> np.ndarray:
         """(n, 2) inductive Venn-ABERS band [p0, p1] per row.
 
@@ -408,11 +438,4 @@ class CalibratedEnsemble:
         """
         if not self.has_intervals:
             raise RuntimeError("fit the ensemble before requesting intervals")
-        assert self._oof_scores is not None and self._oof_labels is not None
-        probs = self._raw_member_matrix(X)
-        w = np.array([self._weights[n] for n in self._members])
-        p_raw = probs @ w
-        out = np.empty((len(p_raw), 2), dtype=float)
-        for i, s in enumerate(p_raw):
-            out[i] = venn_abers_interval(self._oof_scores, self._oof_labels, float(s))
-        return out
+        return self.interval_for_scores(self.raw_scores(X))
