@@ -54,7 +54,6 @@ logger = get_logger(__name__)
 
 _MIN_CALIB_ROWS_ISOTONIC = 300
 _WEIGHT_TEMPERATURE = 0.02  # log-loss units; smaller = sharper member weighting
-_MAX_VA_CALIBRATION = 4096  # Venn-ABERS calibration-sample cap (see fit())
 
 
 def venn_abers_interval(
@@ -333,18 +332,12 @@ class CalibratedEnsemble:
         self._fit_calibrator(p_ens, y_oof, report)
         p_final = self._apply_calibrator(p_ens)
         report.calib_brier = float(np.mean((p_final - y_oof) ** 2))
-        # Kept for Venn-ABERS intervals at prediction time. Each interval
-        # query refits isotonic on this sample (O(n log n)), and beyond a few
-        # thousand points the band stops moving while the cost keeps growing —
-        # so cap it with a seeded subsample.
+        # Kept in full for Venn-ABERS intervals: the band must be computed on
+        # exactly the evidence the calibrator saw, which guarantees (isotonic
+        # monotonicity under single-point augmentation) that p0 <= p̂ <= p1 —
+        # a subsample here made bands that excluded their own point estimate.
         self._oof_scores = p_ens.astype(float)
         self._oof_labels = y_oof.astype(int)
-        if len(self._oof_scores) > _MAX_VA_CALIBRATION:
-            sub = np.random.default_rng(self._seed).choice(
-                len(self._oof_scores), _MAX_VA_CALIBRATION, replace=False
-            )
-            self._oof_scores = self._oof_scores[sub]
-            self._oof_labels = self._oof_labels[sub]
 
         # ---- 4) refit members on the FULL training window ------------------
         for name in self._cfg.members:

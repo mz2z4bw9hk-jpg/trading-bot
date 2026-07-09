@@ -199,6 +199,13 @@ def test_ensemble_interval_brackets_prediction(fitted):
     assert ((bands >= 0) & (bands <= 1)).all()
     # a fitted model on 2400 rows should not produce degenerate full-width bands
     assert float(np.median(bands[:, 1] - bands[:, 0])) < 0.25
+    # CONTAINMENT: on the same calibration evidence, adding (s, 1) can only
+    # pull the isotonic fit at s up and (s, 0) only down, so the band must
+    # bracket the deployed calibrated probability (tolerance = clip bounds).
+    assert model.report_ is not None and model.report_.calibration == "isotonic"
+    p_hat = model.predict_proba(sample)[:, 1]
+    assert (bands[:, 0] <= p_hat + 2e-3).all()
+    assert (p_hat <= bands[:, 1] + 2e-3).all()
 
 
 def test_interval_requires_fit():

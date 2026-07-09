@@ -42,8 +42,8 @@ The JSON block it prints at the end is your executive summary.
 
 | Config | Planted signal | Correct outcome |
 |---|---|---|
-| `configs/control-strong-signal.yaml` | strong | detection: high AUC, many trades, positive Sharpe CI |
-| `configs/default.yaml` | realistically weak | **rejection**: some classifier skill, few trades, CI straddles zero |
+| `configs/control-strong-signal.yaml` | strong | detection: high AUC, many trades, positive Sharpe CI, tight Venn-ABERS bands |
+| `configs/default.yaml` | realistically weak | **refusal**: AUC barely above chance and ZERO trades — no candidate survives the gate chain (EV threshold, Venn-ABERS lower bound, uncertainty ceiling) |
 
 Run both. Seeing the platform *refuse* the weak market teaches you more
 about it than the pretty equity curve does. (The third control is in the

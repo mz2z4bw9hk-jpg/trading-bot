@@ -83,10 +83,10 @@ pip install -e ".[server,dev]"
 # it, emit signals, and show positive OOS statistics.
 titan validate --config configs/control-strong-signal.yaml
 
-# REALISTIC DEMO (~4 min): weak planted signal. Correct outcome: classifier
-# skill above base rate but few trades and a REJECTION verdict under
-# docs/VALIDATION.md — watching the platform refuse a marginal edge is the
-# point of this config.
+# REALISTIC DEMO (~4 min): weak planted signal. Correct outcome: pooled AUC
+# barely above chance and ZERO trades — no candidate clears the gate chain
+# (adaptive EV threshold, Venn-ABERS lower bound, uncertainty ceiling).
+# Watching the platform refuse a weak market is the point of this config.
 titan validate --config configs/default.yaml
 
 # serve the dashboard over the artifacts
