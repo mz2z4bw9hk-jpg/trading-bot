@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from titan import __version__
-from titan.core.config import TitanConfig, load_config
+from titan.core.config import TitanConfig, load_config, research_fingerprint
 from titan.core.log import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -97,6 +97,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         metrics=metrics,
         feature_names=artifacts["selected"],
         description=f"walk-forward {len(report.folds)} folds on {cfg.data.provider}",
+        config_fingerprint=research_fingerprint(cfg),
         train_start=str(report.folds[0].test_start) if report.folds else "",
         train_end=str(report.folds[-1].test_end) if report.folds else "",
     )
@@ -152,6 +153,34 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _config_mismatch_error(manifest, cfg: TitanConfig, allow: bool) -> str | None:
+    """Refuse to run inference when the active config describes a different
+    world than the one the production model was validated on.
+
+    A strong-market model scanned against another config's universe produces
+    plausible-looking, meaningless numbers — the exact failure mode this
+    platform exists to prevent. Old manifests without a fingerprint skip the
+    check (nothing to compare).
+    """
+    fp = research_fingerprint(cfg)
+    if not manifest.config_fingerprint or manifest.config_fingerprint == fp:
+        return None
+    if allow:
+        logger.warning(
+            "config mismatch overridden: model %s fingerprint %s vs active %s",
+            manifest.version, manifest.config_fingerprint, fp,
+        )
+        return None
+    return (
+        f"CONFIG MISMATCH: production model {manifest.version} was validated on a different "
+        f"research configuration (fingerprint {manifest.config_fingerprint}, active {fp}).\n"
+        f"Numbers from a model scanned against a world it never saw are meaningless.\n"
+        f"Pass the SAME --config used for `titan validate` (note: no --config means "
+        f"configs/default.yaml), re-validate under this config, or override with "
+        f"--allow-config-mismatch if you truly know better."
+    )
+
+
 def _paper_store_path(cfg: TitanConfig) -> Path:
     return Path(cfg.model.store_dir) / "paper_track.json"
 
@@ -194,6 +223,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         bundle, manifest = registry.load(None)
     except LookupError:
         print("no production model: run `titan validate` first", file=sys.stderr)
+        return 2
+    error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch)
+    if error:
+        print(error, file=sys.stderr)
         return 2
     logger.info("scanning with production model %s", manifest.version)
 
@@ -280,7 +313,16 @@ def cmd_track(args: argparse.Namespace) -> int:
     n_resolved = 0
     if args.action == "resolve":
         from titan.data.store import MarketDataStore
+        from titan.models.registry import ModelRegistry
 
+        registry = ModelRegistry(cfg.model.store_dir)
+        production = registry.production_version()
+        if production is not None:
+            _, manifest = registry.load(production)
+            error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch)
+            if error:
+                print(error, file=sys.stderr)
+                return 2
         dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
         n_resolved = store.resolve(dataset.frames, cfg.labels)
 
@@ -342,8 +384,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.set_defaults(func=cmd_validate)
 
     p_scan = sub.add_parser("scan", help="scan the universe with the production model")
-    p_scan.add_argument("--config", help="YAML config path")
+    p_scan.add_argument("--config", help="YAML config path (must match the validate run's config)")
     p_scan.add_argument("--out", help="artifacts output dir")
+    p_scan.add_argument(
+        "--allow-config-mismatch", action="store_true",
+        help="scan even if the production model was validated under a different config",
+    )
     p_scan.set_defaults(func=cmd_scan)
 
     p_dash = sub.add_parser("dashboard", help="serve the dashboard")
@@ -368,8 +414,12 @@ def build_parser() -> argparse.ArgumentParser:
         "action", choices=["resolve", "status"],
         help="resolve = fetch data and grade elapsed predictions; status = report only",
     )
-    p_track.add_argument("--config", help="YAML config path")
+    p_track.add_argument("--config", help="YAML config path (must match the validate run's config)")
     p_track.add_argument("--out", help="artifacts dir for tracking.json (default: config artifacts_dir)")
+    p_track.add_argument(
+        "--allow-config-mismatch", action="store_true",
+        help="resolve even if the production model was validated under a different config",
+    )
     p_track.set_defaults(func=cmd_track)
 
     p_info = sub.add_parser("info", help="show platform status")

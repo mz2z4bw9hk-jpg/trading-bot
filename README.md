@@ -96,11 +96,13 @@ titan dashboard --port 8321        # http://127.0.0.1:8321
 # double-click, no server or Python needed to view, hosts anywhere
 titan export                       # -> artifacts/titan_dashboard.html
 
-# rank the universe with the current production model (auto-logs predictions)
-titan scan
+# rank the universe with the current production model (auto-logs predictions).
+# ALWAYS pass the config you validated with: scanning a model against a
+# different config's world is refused (see the config-fingerprint guard).
+titan scan --config configs/control-strong-signal.yaml
 
 # grade logged predictions against realized barriers; live calibration + CUSUM
-titan track resolve
+titan track resolve --config configs/control-strong-signal.yaml
 
 # platform / registry / paper-tracking status
 titan info

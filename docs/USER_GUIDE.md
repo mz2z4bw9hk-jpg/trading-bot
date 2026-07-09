@@ -109,12 +109,19 @@ How to read it:
 ## 5. Daily operation
 
 ```bash
-titan scan                    # rank the universe; auto-logs its predictions
-titan track resolve           # grade elapsed predictions against real bars
-titan info                    # registry, production version, tracking status
-titan dashboard --port 8321   # always reads the latest artifacts
-titan export                  # one static HTML file of the same dashboard
+titan scan --config <cfg>          # rank the universe; auto-logs predictions
+titan track resolve --config <cfg> # grade elapsed predictions on real bars
+titan info                         # registry, production, tracking status
+titan dashboard --port 8321        # always reads the latest artifacts
+titan export                       # one static HTML file of the dashboard
 ```
+
+`<cfg>` is the SAME config you validated with. Each model remembers a
+fingerprint of the world it was trained on (provider, universe, labels,
+features — and, on synthetic data, the seed); `scan` and `track resolve`
+refuse a mismatched config instead of producing plausible-looking numbers
+about a market the model never saw. Bare `titan scan` means
+`configs/default.yaml`, which is usually *not* what you validated with.
 
 `scan` is pure inference (seconds). Retraining happens only through
 `validate`, and a retrained model reaches production **only** by beating
@@ -222,6 +229,7 @@ gate decide. Never hand-promote.
 | `training window too small` | not enough history for `cv.min_train_bars` / internal folds — more bars or fewer folds |
 | Instrument missing from results | failed QC; see `artifacts/quality.json` and the log line explaining why |
 | Yahoo fetch fails | no network egress from your environment; use `csv` |
+| `CONFIG MISMATCH` on scan/resolve | you validated with one `--config` and scanned with another (bare `titan scan` = `configs/default.yaml`) — pass the config the model was validated with |
 | `titan track resolve` exits 3 | that IS the CUSUM alarm — run `validate` to produce a challenger and let the promotion gate decide |
 | Signal shows a wide P band | thin calibration evidence near that score; the conservative gate already priced that in |
 | Slow validate | lower `tuning_iterations` / `internal_folds`, or trim `members` |

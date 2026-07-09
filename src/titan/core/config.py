@@ -8,6 +8,8 @@ producing garbage research.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -206,6 +208,30 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+def research_fingerprint(cfg: TitanConfig) -> str:
+    """Fingerprint of the *world* a model is trained for.
+
+    Covers the sections that define what the data and labels mean — data
+    source, universe, label geometry, feature settings, and (synthetic only,
+    where the seed literally generates the market) the seed. Two configs with
+    the same fingerprint produce models and scans that may be compared;
+    scanning a model against a config with a different fingerprint produces
+    numbers about a world the model never saw. Deliberately excludes run
+    paths, CV/model/tuning, risk and gate settings: those change how hard we
+    look, not what we are looking at.
+    """
+    payload: dict[str, Any] = {
+        "data": {k: v for k, v in cfg.data.model_dump(mode="json").items() if k != "cache_dir"},
+        "universe": cfg.universe.model_dump(mode="json"),
+        "labels": cfg.labels.model_dump(mode="json"),
+        "features": cfg.features.model_dump(mode="json"),
+    }
+    if cfg.data.provider == "synthetic":
+        payload["seed"] = cfg.run.seed
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 
 def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> TitanConfig:
