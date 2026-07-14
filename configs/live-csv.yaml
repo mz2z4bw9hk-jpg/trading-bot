@@ -1,0 +1,44 @@
+# Live research on chart exports dropped into data_tv/ (see data_tv/README.md).
+#
+# IMPORTANT: list one instrument per CSV file you uploaded, using the ticker
+# part of the filename ("BINANCE_BTCUSDT, 1D.csv" -> BTCUSDT). The benchmark
+# needs a file too. This template ships with a typical starter universe —
+# edit it to match what you actually uploaded (or ask Claude to sync it).
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: csv
+  csv_dir: data_tv
+  cache_dir: data_cache
+  bars: 2500
+  min_history_bars: 1500
+
+universe:
+  name: live-csv
+  benchmark: SPY
+  instruments:
+    - { symbol: BTCUSDT, asset_class: crypto, sector: crypto }
+    - { symbol: ETHUSDT, asset_class: crypto, sector: crypto }
+    - { symbol: SPY,     asset_class: etf,    sector: broad }
+    - { symbol: QQQ,     asset_class: etf,    sector: broad }
+    - { symbol: AAPL,    asset_class: equity, sector: technology }
+    - { symbol: NVDA,    asset_class: equity, sector: technology }
+
+cv:
+  n_folds: 5
+  embargo_bars: 10
+  min_train_bars: 756
+  test_bars: 252
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 3.0
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
