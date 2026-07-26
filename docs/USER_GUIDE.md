@@ -9,11 +9,20 @@ safety rules in `VALIDATION.md`, and the internals in `ARCHITECTURE.md`.
 
 ```bash
 git clone <repo> && cd trading-bot
-pip install -e ".[server,dev]"
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[server,data,dev]"
 titan --version        # sanity check the CLI landed
 ```
 
-Python 3.11+. No GPU, no database, no API keys needed for the offline demo.
+Python 3.11+ — check with `python3 --version`; the Python that ships with
+macOS is 3.9 and will refuse the install. The virtualenv is not ceremony: it
+is what puts the `titan` command on your PATH and makes `pip` writable.
+Re-activate it (`source .venv/bin/activate`) in every new terminal.
+
+Extras: `server` for the dashboard, `dev` for the test suite, and **`data`
+for `provider: yahoo`** (it brings `yfinance`) — omit `data` and a Yahoo run
+fails at fetch time with a missing-dependency error. No GPU, no database, no
+API keys needed for the offline demo.
 
 ## 2. Your first run (~4 minutes)
 

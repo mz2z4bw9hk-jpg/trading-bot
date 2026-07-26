@@ -77,7 +77,8 @@ before decay shows up in PnL.
 ## Quickstart
 
 ```bash
-pip install -e ".[server,dev]"
+python3 -m venv .venv && source .venv/bin/activate   # Python 3.11+
+pip install -e ".[server,data,dev]"                  # drop "data" if you never use provider: yahoo
 
 # POSITIVE CONTROL (~4 min): strong planted signal — the pipeline must find
 # it, emit signals, and show positive OOS statistics.
