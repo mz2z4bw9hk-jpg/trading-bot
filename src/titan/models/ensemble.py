@@ -254,6 +254,27 @@ class CalibratedEnsemble:
             if t1 is not None:
                 t1 = t1.iloc[keep]
 
+        # Drop features that are constant in THIS training window. They carry
+        # no information by construction, and the gradient-boosting binner does
+        # not merely ignore them — it builds bin edges from the midpoints of
+        # adjacent distinct values, so a single distinct value raises deep
+        # inside sklearn ("window shape cannot be larger than input array
+        # shape"). A feature can be varying overall and constant in one fold,
+        # so this has to happen per fit, not once during selection.
+        varying = X.nunique(dropna=False) > 1
+        if not varying.all():
+            dropped = list(X.columns[~varying])
+            logger.info(
+                "dropping %d constant feature(s) in this training window: %s",
+                len(dropped), ", ".join(dropped[:5]) + ("..." if len(dropped) > 5 else ""),
+            )
+            X = X.loc[:, varying]
+        if X.shape[1] == 0:
+            raise ValueError(
+                "every feature is constant across this training window — "
+                "the window is too short or the data is degenerate"
+            )
+
         self.feature_names_ = list(X.columns)
         y_arr = y.to_numpy().astype(int)
         w_arr = sample_weight.to_numpy() if sample_weight is not None else None

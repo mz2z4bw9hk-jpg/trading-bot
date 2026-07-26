@@ -192,10 +192,13 @@ class MarketDataStore:
         if not frames:
             raise RuntimeError("no instrument passed data QC; cannot build dataset")
 
-        benchmark_frame = normalize_ohlcv(
-            self._provider.fetch(universe.benchmark, self._cfg.bars),
-            max_forward_fill=self._cfg.max_forward_fill,
-        )
+        # The benchmark goes through the SAME path as every instrument. It used
+        # to be fetched and normalized inline, which quietly skipped resampling
+        # and asked for target-bar counts against a source-bar interval: the
+        # regime detector would then fit on 1h bars while the instruments it
+        # gates traded on 2h ones. It is still not QC-gated — it is the
+        # reference series, not a tradeable — but it must be the same clock.
+        benchmark_frame = self._load_one(universe.benchmark, use_cache)
 
         true_regimes = None
         if isinstance(self._provider, SyntheticProvider):

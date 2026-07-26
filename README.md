@@ -149,7 +149,7 @@ titan validate --config configs/style-longterm.yaml         # 1wk, holds of mont
 titan validate --config configs/style-swing.yaml            # 1d,  days to weeks
 titan validate --config configs/style-daytrading.yaml       # 1h,  one session
 titan validate --config configs/style-semiscalp.yaml        # 1h,  ~3h, equities
-titan validate --config configs/style-semiscalp-crypto.yaml # 2h,  ~4h, 24/7
+titan validate --config configs/style-semiscalp-crypto.yaml # 3h,  ~6h, 24/7
 titan validate --config configs/style-scalping.yaml         # 5m,  exploratory only
 ```
 

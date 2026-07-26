@@ -215,3 +215,47 @@ def test_interval_requires_fit():
     assert not model.has_intervals
     with pytest.raises(RuntimeError, match="fit"):
         model.probability_interval(pd.DataFrame({"f0": [0.0]}))
+
+
+def test_constant_feature_does_not_crash_the_fit():
+    """A feature with one distinct value in a fold's train window.
+
+    Gradient boosting bins by taking midpoints of adjacent distinct values, so
+    a constant column raises "window shape cannot be larger than input array
+    shape" from deep inside sklearn rather than being ignored. Features are
+    screened on the full panel but fitted per fold, so a column that varies
+    overall can be constant in one window — the guard has to live at fit time.
+    """
+    rng = np.random.default_rng(0)
+    n = 900
+    idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=n), tz="UTC")
+    X = pd.DataFrame(
+        {
+            "informative": rng.normal(size=n),
+            "constant": np.ones(n),
+            "also_informative": rng.normal(size=n),
+        },
+        index=idx,
+    )
+    y = pd.Series((X["informative"] + rng.normal(0, 0.5, n) > 0).astype(int), index=idx)
+
+    ens = CalibratedEnsemble(ModelConfig(tuning_iterations=0), horizon_bars=5, seed=7)
+    ens.fit(X, y, idx)
+
+    assert "constant" not in ens.feature_names_
+    assert ens.feature_names_ == ["informative", "also_informative"]
+
+    probs = ens.predict_proba(X)  # predict must follow the surviving columns
+    assert probs.shape == (n, 2)
+    assert np.isfinite(probs).all()
+
+
+def test_all_constant_features_fail_loudly():
+    n = 900
+    idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=n), tz="UTC")
+    X = pd.DataFrame({"a": np.ones(n), "b": np.zeros(n)}, index=idx)
+    y = pd.Series(np.resize([0, 1], n), index=idx)
+
+    ens = CalibratedEnsemble(ModelConfig(tuning_iterations=0), horizon_bars=5, seed=7)
+    with pytest.raises(ValueError, match="every feature is constant"):
+        ens.fit(X, y, idx)

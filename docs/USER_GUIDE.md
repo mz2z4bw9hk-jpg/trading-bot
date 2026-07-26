@@ -201,7 +201,7 @@ flagged by QC and below `cv.min_train_bars` the run refuses to start.
 | Swing | `configs/style-swing.yaml` | `1d` | days–weeks |
 | Day trading | `configs/style-daytrading.yaml` | `1h` | one session |
 | Semi-scalping (equities) | `configs/style-semiscalp.yaml` | `1h` | ~3 hours |
-| Semi-scalping (crypto) | `configs/style-semiscalp-crypto.yaml` | `2h` | ~4 hours |
+| Semi-scalping (crypto) | `configs/style-semiscalp-crypto.yaml` | `3h` | ~6 hours |
 | Scalping | `configs/style-scalping.yaml` | `5m` | minutes — exploratory only |
 
 **Semi-scalping is the floor of honest research here.** The objections that

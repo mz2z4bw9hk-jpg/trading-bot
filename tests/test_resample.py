@@ -211,3 +211,41 @@ def test_cache_is_keyed_by_the_resample_source():
 
 def test_cache_key_is_stable_for_one_configuration():
     assert _cache_dir("2h", "1h") == _cache_dir("2h", "1h")
+
+
+# --------------------------------------------------- benchmark consistency --
+
+
+def test_benchmark_goes_through_the_same_path_as_instruments():
+    """The regime detector fits on the benchmark: it must share the clock.
+
+    The benchmark was once fetched and normalized inline, skipping resampling
+    entirely — so a 2h run gated its instruments with regimes detected on 1h
+    bars, and asked the vendor for target-bar counts at a source-bar interval.
+    """
+    from titan.data.store import MarketDataStore
+
+    data = DataConfig(
+        provider="synthetic",
+        bars=900,
+        min_history_bars=100,
+        timeframe="1d",
+        resample_from="1h",
+    )
+    universe = UniverseConfig(
+        name="t",
+        benchmark="INDEX",
+        instruments=[
+            {"symbol": "AAA", "asset_class": "equity", "sector": "s"},
+            {"symbol": "BBB", "asset_class": "equity", "sector": "s"},
+        ],
+    )
+
+    dataset = MarketDataStore(data, universe, seed=7).load()
+
+    instrument_index = next(iter(dataset.frames.values())).index
+    bench_index = dataset.benchmark_frame.index
+    # Same spacing convention: the benchmark must not be finer than the panel.
+    assert bench_index.to_series().diff().median() == (
+        instrument_index.to_series().diff().median()
+    )

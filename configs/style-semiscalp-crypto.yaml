@@ -1,8 +1,8 @@
-# SEMI-SCALPING (crypto) — 2-hour bars, holds of about four hours.
+# SEMI-SCALPING (crypto) — 3-hour bars, holds of about six hours.
 #
 #   titan validate --config configs/style-semiscalp-crypto.yaml
 #
-# WHY 2h AND NOT 1h. Yahoo's hourly crypto series carries no volume on roughly
+# WHY 3h AND NOT 1h. Yahoo's hourly crypto series carries no volume on roughly
 # half its bars (measured: 50.7%-51.7% across BTC, ETH, SOL, XRP, DOGE and
 # LINK). TITAN builds OBV slope, dollar-volume z-scores, up/down volume and
 # close location value from that column, so QC scored every symbol at 0.14
@@ -10,19 +10,21 @@
 # the data, only stopped the platform from telling you about it.
 #
 # So this config fetches 1h bars and aggregates them (data.resample_from):
-# summing two source bars leaves a target bar empty only where BOTH source
-# bars were, which recovers a genuine traded-volume column rather than
-# inventing one. Total volume is conserved exactly; a test enforces it.
+# summing source bars leaves a target bar empty only where ALL of them were,
+# which recovers a genuine traded-volume column rather than inventing one.
+# Total volume is conserved exactly; a test enforces it.
 #
-# IF QC STILL REFUSES SYMBOLS, the zeros are clustered rather than
-# alternating, and two source bars are not enough to cover them. Step up:
+# WHY THREE BARS AND NOT TWO. The missing volume is not on alternating bars —
+# scripts/probe_yahoo_interval.py shows ~51% missing in every hour of the day,
+# with runs of consecutive empties (P(empty | previous empty) = 0.67). Pairing
+# bars therefore only reaches ~34% empty, and QC's floor sits at 36.9%: on a
+# 2h build BTC and ETH squeaked through while SOL, XRP, DOGE and LINK were all
+# refused between 35% and 38%. Three bars reach ~23%, which clears with room
+# rather than by luck.
 #
-#     timeframe: 3h   (~5,840 bars, ~6h holds)
-#     timeframe: 4h   (~4,380 bars, ~8h holds)
-#
-# scaling data.bars, min_history_bars and the cv windows down by the same
-# factor. Run `python scripts/probe_yahoo_interval.py BTC-USD 1h` to see the
-# actual pattern before choosing.
+# IF QC STILL REFUSES A SYMBOL, go one step further — timeframe: 4h (~15%
+# empty, ~4,380 bars, ~8h holds) — and scale data.bars, min_history_bars and
+# the cv windows down by 4/3.
 #
 # THE ALTERNATIVE, IF YOU WANT TRUE 1h. Export 1h charts from TradingView or
 # your exchange into data_tv/ — exchange exports carry real per-bar volume —
@@ -30,13 +32,13 @@
 # resample_from. That is strictly better data; it just is not automatic.
 #
 # HISTORY CEILING: Yahoo keeps 730 calendar days of hourly bars. For a 24/7
-# asset that is ~17,500 source bars, so ~8,760 two-hour bars — about 1.7 years
+# asset that is ~17,500 source bars, so ~5,840 three-hour bars — about 2 years
 # of market. Plenty of rows, few regimes: read regime_breakdown first.
 #
 # The benchmark is BTC-USD, not SPY, deliberately: the regime detector fits on
 # the benchmark, and an equity benchmark would feed it a 7-bar day while its
 # instruments trade 24. With every tradeable leg in crypto the run annualizes
-# on 24/7 (4,380 two-hour bars per year) rather than on an equity session.
+# on 24/7 (2,920 three-hour bars per year) rather than on an equity session.
 
 run:
   seed: 7
@@ -45,11 +47,11 @@ run:
 
 data:
   provider: yahoo
-  timeframe: 2h
+  timeframe: 3h
   resample_from: 1h       # see the note above: repairs Yahoo's volume column
   cache_dir: data_cache
-  bars: 8500              # ~1.7 years of 24/7 two-hour bars
-  min_history_bars: 7000
+  bars: 5800              # ~2 years of 24/7 three-hour bars
+  min_history_bars: 5000
   min_reliability: 0.85
 
 universe:
@@ -64,18 +66,18 @@ universe:
     - { symbol: LINK-USD, asset_class: crypto, sector: crypto }
 
 labels:
-  horizon_bars: 2         # ~4 hours
+  horizon_bars: 2         # ~6 hours
   tp_sigma: 0.89          # 2.0 * sqrt(2/10): daily reachability at a 2-bar horizon
   sl_sigma: 0.67          # 1.5 * sqrt(2/10)
 
 cv:
-  n_folds: 5
+  n_folds: 4
   embargo_bars: 8         # comfortably longer than the 2-bar label lifetime
-  min_train_bars: 2500    # ~7 months of 24/7 two-hour bars
-  test_bars: 800          # ~9 weeks per fold
+  min_train_bars: 1800    # ~7 months of 24/7 three-hour bars
+  test_bars: 800          # ~3 months per fold
 
 regime:
-  min_train_bars: 800
+  min_train_bars: 600
 
 backtest:
   costs:
