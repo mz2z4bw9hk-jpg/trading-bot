@@ -170,3 +170,8 @@ def warn_on_calendar_mismatch(clock: BarClock, index: pd.DatetimeIndex) -> None:
         "Set data.bars_per_year to override.",
         clock.timeframe, clock.bars_per_year, observed, ratio, ratio, ratio**0.5,
     )
+
+
+# Bars finer than one day. On a market that closes, these carry session
+# boundaries that calendar-naive checks misread as missing data.
+INTRADAY_TIMEFRAMES: frozenset[str] = frozenset({"4h", "1h", "30m", "15m", "5m", "1m"})

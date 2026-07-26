@@ -16,6 +16,7 @@ import pandas as pd
 
 from titan.core.config import DataConfig, UniverseConfig
 from titan.core.log import get_logger
+from titan.core.timeframe import INTRADAY_TIMEFRAMES
 from titan.core.types import AssetClass, Instrument, Universe
 from titan.data.providers import DataProvider, SyntheticProvider, build_provider
 from titan.data.quality import DataQualityReport, assess_quality
@@ -62,6 +63,13 @@ class MarketDataStore:
         self._cfg = data_cfg
         self._universe_cfg = universe_cfg
         self._provider = provider or build_provider(data_cfg, universe_cfg, seed)
+        # Bars finer than a day on a market that closes: QC must not read the
+        # exchange's opening hours as dropped data (see assess_quality).
+        tradeable = [
+            i for i in universe_cfg.instruments if i.symbol != universe_cfg.benchmark
+        ]
+        continuous = bool(tradeable) and all(i.asset_class == "crypto" for i in tradeable)
+        self._intraday_sessions = data_cfg.timeframe in INTRADAY_TIMEFRAMES and not continuous
         # Cache keyed by everything that determines the data. A stale cache
         # silently serving frames from a different configuration corrupts
         # research; live providers additionally get a per-day key so "most
@@ -128,7 +136,12 @@ class MarketDataStore:
                 excluded[symbol] = f"load failed: {exc}"
                 logger.warning("excluding %s: %s", symbol, exc)
                 continue
-            report = assess_quality(symbol, frame, min_bars=self._cfg.min_history_bars)
+            report = assess_quality(
+                symbol,
+                frame,
+                min_bars=self._cfg.min_history_bars,
+                intraday_sessions=self._intraday_sessions,
+            )
             reports[symbol] = report
             reliability[symbol] = report.reliability
             if report.reliability < self._cfg.min_reliability:

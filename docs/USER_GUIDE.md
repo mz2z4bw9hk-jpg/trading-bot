@@ -234,6 +234,15 @@ books are routinely benchmarked against SPY). If the loaded data disagrees
 with the resolved convention, the run logs a `calendar mismatch` warning —
 set `data.bars_per_year` explicitly to settle it.
 
+**QC is session-aware below daily.** On a market that closes, an hourly
+series carries an overnight boundary every seventh bar. Gap detection would
+read those as dropped data and the bad-print detector would read the
+overnight move as an error, failing every symbol on the exchange for keeping
+normal hours. Both checks therefore evaluate intra-session structure
+separately from session boundaries when the timeframe is intraday and the
+universe is not 24/7 — without going blind: a hole *inside* a session and a
+bad print in either population are still caught.
+
 **Shorter bars are not more research, they are less.** Two things get worse
 as the bar shrinks:
 

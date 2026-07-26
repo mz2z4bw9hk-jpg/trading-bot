@@ -43,12 +43,46 @@ def _linear_penalty(value: float, ok_at: float, zero_at: float) -> float:
     return float(1.0 - (value - ok_at) / (zero_at - ok_at))
 
 
-def assess_quality(symbol: str, df: pd.DataFrame, min_bars: int = 400) -> DataQualityReport:
+def _session_continuation(index: pd.DatetimeIndex) -> np.ndarray:
+    """Per-bar mask: True where a bar continues the previous bar's session.
+
+    Session boundaries are detected as a change of calendar date, which needs
+    no exchange calendar and holds for overnight gaps, weekends and holidays
+    alike.
+    """
+    dates = index.normalize()
+    return np.asarray(dates[1:] == dates[:-1])
+
+
+def _outlier_fraction(log_ret: pd.Series) -> float:
+    """Fraction of returns beyond 15 robust sigmas of their own population."""
+    if len(log_ret) <= 30:
+        return 0.0
+    mad = float((log_ret - log_ret.median()).abs().median())
+    robust_sigma = max(1.4826 * mad, 1e-6)
+    return float((log_ret.abs() > 15 * robust_sigma).mean())
+
+
+def assess_quality(
+    symbol: str,
+    df: pd.DataFrame,
+    min_bars: int = 400,
+    *,
+    intraday_sessions: bool = False,
+) -> DataQualityReport:
     """Run the QC battery on a canonical OHLCV frame and score reliability.
 
     Subscores (each in [0,1]) are combined geometrically so that a single
     catastrophic dimension collapses the composite score — a series with
     perfect volume data but 30% stale closes is still unusable.
+
+    ``intraday_sessions`` marks bars finer than a day on a market that closes
+    (US equities, not crypto). Two checks are otherwise calendar-naive and
+    fail every such series on its normal structure: the overnight boundary
+    looks like a dropped-bar gap, and the overnight return looks like a data
+    error next to intra-session hourly moves. Both are then evaluated
+    session-aware — the defects they hunt for stay detectable, but the
+    market's own clock stops counting as one.
     """
     report = DataQualityReport(symbol=symbol, n_bars=len(df))
     checks = report.checks
@@ -81,21 +115,36 @@ def assess_quality(symbol: str, df: pd.DataFrame, min_bars: int = 400) -> DataQu
 
     # -- extreme returns (data errors, not crashes: robust 15-MAD threshold) --
     log_ret = np.log(df["close"]).diff().dropna()
-    if len(log_ret) > 30:
-        mad = float((log_ret - log_ret.median()).abs().median())
-        robust_sigma = max(1.4826 * mad, 1e-6)
-        frac_extreme = float((log_ret.abs() > 15 * robust_sigma).mean())
+    if intraday_sessions and len(log_ret) > 1:
+        # Overnight and intra-session returns are different populations: a
+        # gap-up open is not an error, it just dwarfs an hourly move. Score
+        # each against its own robust sigma so real bad prints in either are
+        # still caught.
+        cont = _session_continuation(df.index)[-len(log_ret):]
+        intra, overnight = log_ret[cont], log_ret[~cont]
+        n = len(log_ret)
+        frac_extreme = (
+            _outlier_fraction(intra) * len(intra) + _outlier_fraction(overnight) * len(overnight)
+        ) / max(n, 1)
     else:
-        frac_extreme = 0.0
+        frac_extreme = _outlier_fraction(log_ret)
     checks["return_outliers"] = _linear_penalty(frac_extreme, ok_at=0.0005, zero_at=0.02)
     if frac_extreme > 0.0005:
         report.issues.append(f"{frac_extreme:.3%} returns beyond 15 robust sigmas")
 
     # -- gaps in the calendar -------------------------------------------------
+    # A dropped bar shows up as a hole INSIDE a session; the hole between
+    # sessions is the market being closed. On a session market at intraday
+    # resolution the latter is every seventh bar of an hourly series, which
+    # would fail every symbol on the exchange's opening hours.
     if len(df) > 2:
         spacing = df.index.to_series().diff().dropna()
-        median_step = spacing.median()
-        big_gaps = float((spacing > 5 * median_step).mean())
+        if intraday_sessions:
+            spacing = spacing[_session_continuation(df.index)]
+        if len(spacing) > 1:
+            big_gaps = float((spacing > 5 * spacing.median()).mean())
+        else:
+            big_gaps = 0.0
     else:
         big_gaps = 0.0
     checks["calendar_gaps"] = _linear_penalty(big_gaps, ok_at=0.002, zero_at=0.05)
