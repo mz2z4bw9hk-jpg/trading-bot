@@ -1,0 +1,173 @@
+# Top 100 US equities on HOURLY bars, ~3-hour holds (semi-scalping at scale).
+#
+#   titan validate --config configs/top100-hourly.yaml
+#
+# THE CRYPTO HALF OF configs/top100.yaml IS DELIBERATELY ABSENT.
+# Yahoo's hourly crypto series carries no volume on roughly half its bars
+# (measured: 50.7%-51.7% across BTC, ETH, SOL, XRP, DOGE and LINK). TITAN's
+# volume features -- OBV slope, dollar-volume z-score, up/down volume, close
+# location value -- would be computed on that, so QC refuses every one of
+# those symbols and the run cannot start. For hourly crypto, export 1h bars
+# from an exchange chart into data_tv/ and use configs/style-semiscalp-crypto
+# .yaml, which reads them through the csv provider. Crypto on DAILY bars is
+# fine on Yahoo: use configs/top100.yaml.
+#
+# RUNTIME: ~100 instruments x ~3,500 hourly bars is roughly 350,000 panel
+# rows. Budget several hours and expect Yahoo to throttle partway through a
+# 100-symbol download -- rerun, the data_cache makes the second pass cheap.
+# tuning_iterations is trimmed accordingly; raise it once a shorter universe
+# has told you the setup is worth the compute.
+#
+# HISTORY CEILING: Yahoo keeps 730 calendar days of hourly bars, about 3,500
+# bars for a US equity. That satisfies the fold geometry below and is still
+# only two years of market. Read regime_breakdown before anything else: a
+# walk-forward that never met a bear market has not been tested against one.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1h
+  cache_dir: data_cache
+  bars: 3500
+  min_history_bars: 3000
+  min_reliability: 0.85
+
+universe:
+  name: top100-hourly
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY, asset_class: etf, sector: broad }
+    - { symbol: NVDA,  asset_class: equity, sector: technology }
+    - { symbol: AAPL,  asset_class: equity, sector: technology }
+    - { symbol: MSFT,  asset_class: equity, sector: technology }
+    - { symbol: GOOGL, asset_class: equity, sector: communication }
+    - { symbol: AMZN,  asset_class: equity, sector: consumer }
+    - { symbol: META,  asset_class: equity, sector: communication }
+    - { symbol: AVGO,  asset_class: equity, sector: technology }
+    - { symbol: TSLA,  asset_class: equity, sector: consumer }
+    - { symbol: BRK-B, asset_class: equity, sector: financials }
+    - { symbol: LLY,   asset_class: equity, sector: healthcare }
+    - { symbol: WMT,   asset_class: equity, sector: consumer }
+    - { symbol: JPM,   asset_class: equity, sector: financials }
+    - { symbol: V,     asset_class: equity, sector: financials }
+    - { symbol: ORCL,  asset_class: equity, sector: technology }
+    - { symbol: MA,    asset_class: equity, sector: financials }
+    - { symbol: XOM,   asset_class: equity, sector: energy }
+    - { symbol: COST,  asset_class: equity, sector: consumer }
+    - { symbol: UNH,   asset_class: equity, sector: healthcare }
+    - { symbol: NFLX,  asset_class: equity, sector: communication }
+    - { symbol: PG,    asset_class: equity, sector: consumer }
+    - { symbol: JNJ,   asset_class: equity, sector: healthcare }
+    - { symbol: HD,    asset_class: equity, sector: consumer }
+    - { symbol: ABBV,  asset_class: equity, sector: healthcare }
+    - { symbol: BAC,   asset_class: equity, sector: financials }
+    - { symbol: CRM,   asset_class: equity, sector: technology }
+    - { symbol: AMD,   asset_class: equity, sector: technology }
+    - { symbol: CVX,   asset_class: equity, sector: energy }
+    - { symbol: KO,    asset_class: equity, sector: consumer }
+    - { symbol: MRK,   asset_class: equity, sector: healthcare }
+    - { symbol: PEP,   asset_class: equity, sector: consumer }
+    - { symbol: TMO,   asset_class: equity, sector: healthcare }
+    - { symbol: LIN,   asset_class: equity, sector: materials }
+    - { symbol: ADBE,  asset_class: equity, sector: technology }
+    - { symbol: CSCO,  asset_class: equity, sector: technology }
+    - { symbol: ACN,   asset_class: equity, sector: technology }
+    - { symbol: MCD,   asset_class: equity, sector: consumer }
+    - { symbol: WFC,   asset_class: equity, sector: financials }
+    - { symbol: ABT,   asset_class: equity, sector: healthcare }
+    - { symbol: GE,    asset_class: equity, sector: industrials }
+    - { symbol: IBM,   asset_class: equity, sector: technology }
+    - { symbol: NOW,   asset_class: equity, sector: technology }
+    - { symbol: TXN,   asset_class: equity, sector: technology }
+    - { symbol: DIS,   asset_class: equity, sector: communication }
+    - { symbol: CAT,   asset_class: equity, sector: industrials }
+    - { symbol: QCOM,  asset_class: equity, sector: technology }
+    - { symbol: PM,    asset_class: equity, sector: consumer }
+    - { symbol: VZ,    asset_class: equity, sector: communication }
+    - { symbol: INTU,  asset_class: equity, sector: technology }
+    - { symbol: DHR,   asset_class: equity, sector: healthcare }
+    - { symbol: AXP,   asset_class: equity, sector: financials }
+    - { symbol: ISRG,  asset_class: equity, sector: healthcare }
+    - { symbol: AMGN,  asset_class: equity, sector: healthcare }
+    - { symbol: MS,    asset_class: equity, sector: financials }
+    - { symbol: NEE,   asset_class: equity, sector: utilities }
+    - { symbol: RTX,   asset_class: equity, sector: industrials }
+    - { symbol: PFE,   asset_class: equity, sector: healthcare }
+    - { symbol: T,     asset_class: equity, sector: communication }
+    - { symbol: SPGI,  asset_class: equity, sector: financials }
+    - { symbol: UNP,   asset_class: equity, sector: industrials }
+    - { symbol: GS,    asset_class: equity, sector: financials }
+    - { symbol: LOW,   asset_class: equity, sector: consumer }
+    - { symbol: PGR,   asset_class: equity, sector: financials }
+    - { symbol: ETN,   asset_class: equity, sector: industrials }
+    - { symbol: BKNG,  asset_class: equity, sector: consumer }
+    - { symbol: HON,   asset_class: equity, sector: industrials }
+    - { symbol: UBER,  asset_class: equity, sector: industrials }
+    - { symbol: TJX,   asset_class: equity, sector: consumer }
+    - { symbol: BLK,   asset_class: equity, sector: financials }
+    - { symbol: COP,   asset_class: equity, sector: energy }
+    - { symbol: C,     asset_class: equity, sector: financials }
+    - { symbol: SYK,   asset_class: equity, sector: healthcare }
+    - { symbol: VRTX,  asset_class: equity, sector: healthcare }
+    - { symbol: BSX,   asset_class: equity, sector: healthcare }
+    - { symbol: MU,    asset_class: equity, sector: technology }
+    - { symbol: ADP,   asset_class: equity, sector: industrials }
+    - { symbol: MDT,   asset_class: equity, sector: healthcare }
+    - { symbol: LMT,   asset_class: equity, sector: industrials }
+    - { symbol: ADI,   asset_class: equity, sector: technology }
+    - { symbol: PLD,   asset_class: equity, sector: real_estate }
+    - { symbol: MMC,   asset_class: equity, sector: financials }
+    - { symbol: SCHW,  asset_class: equity, sector: financials }
+    - { symbol: CB,    asset_class: equity, sector: financials }
+    - { symbol: KKR,   asset_class: equity, sector: financials }
+    - { symbol: AMAT,  asset_class: equity, sector: technology }
+    - { symbol: BX,    asset_class: equity, sector: financials }
+    - { symbol: DE,    asset_class: equity, sector: industrials }
+    - { symbol: SO,    asset_class: equity, sector: utilities }
+    - { symbol: GILD,  asset_class: equity, sector: healthcare }
+    - { symbol: LRCX,  asset_class: equity, sector: technology }
+    - { symbol: MDLZ,  asset_class: equity, sector: consumer }
+    - { symbol: INTC,  asset_class: equity, sector: technology }
+    - { symbol: ELV,   asset_class: equity, sector: healthcare }
+    - { symbol: ICE,   asset_class: equity, sector: financials }
+    - { symbol: CI,    asset_class: equity, sector: healthcare }
+    - { symbol: KLAC,  asset_class: equity, sector: technology }
+    - { symbol: PANW,  asset_class: equity, sector: technology }
+    - { symbol: REGN,  asset_class: equity, sector: healthcare }
+    - { symbol: SBUX,  asset_class: equity, sector: consumer }
+    - { symbol: DUK,   asset_class: equity, sector: utilities }
+    - { symbol: ANET,  asset_class: equity, sector: technology }
+
+labels:
+  horizon_bars: 3         # ~3 hours
+  tp_sigma: 1.10          # 2.0 * sqrt(3/10): daily reachability at a 3-bar horizon
+  sl_sigma: 0.82          # 1.5 * sqrt(3/10)
+
+cv:
+  n_folds: 4
+  embargo_bars: 10
+  min_train_bars: 1400    # ~200 sessions
+  test_bars: 400          # ~60 sessions per fold
+
+regime:
+  min_train_bars: 400
+
+model:
+  members: [hgb, rf, logistic]
+  calibration: isotonic
+  tuning_iterations: 6    # trimmed: the panel is large, search breadth is expensive
+  internal_folds: 3
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 5.0       # crossed ~6.5x more often than on daily bars
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.3

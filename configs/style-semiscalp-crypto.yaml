@@ -2,11 +2,24 @@
 #
 #   titan validate --config configs/style-semiscalp-crypto.yaml
 #
-# Crypto is the better venue for hourly research, for one unglamorous reason:
-# Yahoo's 730-day hourly cap yields ~3,500 bars on an equity that trades 6.5
-# hours a day, and ~17,500 on an asset that never closes. Five times the
-# evidence for the same calendar window, with no overnight gaps for the
-# barrier logic to trip over.
+# THIS CONFIG READS CSV EXPORTS, NOT YAHOO. That is not a preference.
+# Yahoo's hourly crypto series carries no volume on roughly half its bars
+# (measured: 50.7%-51.7% across BTC, ETH, SOL, XRP, DOGE and LINK). TITAN
+# computes OBV slope, dollar-volume z-scores, up/down volume and close
+# location value from that column, so QC scores every one of those symbols at
+# ~0.14 reliability and refuses the run outright. Yahoo's DAILY crypto volume
+# is fine -- the defect is specific to the intraday series.
+#
+# TO GET THE DATA: open each chart (TradingView, or your exchange), set the
+# interval to 1h, export, and drop the CSVs into data_tv/. Exchange exports
+# carry true traded volume. Run scripts/probe_yahoo_interval.py to see the
+# Yahoo defect for yourself before taking my word for it.
+#
+# Crypto remains the better venue for hourly research once the data is sound:
+# a 730-day window yields ~3,500 bars on an equity that trades 6.5 hours a
+# day and ~17,500 on an asset that never closes -- five times the evidence for
+# the same calendar span, with no overnight gaps for the barrier logic to
+# trip over.
 #
 # The annualization constant follows automatically: with every tradeable leg
 # in crypto, the run annualizes on 24/7 (8,760 hourly bars per year) rather
@@ -31,7 +44,8 @@ run:
   log_level: INFO
 
 data:
-  provider: yahoo
+  provider: csv           # see the note above: Yahoo cannot serve hourly crypto
+  csv_dir: data_tv
   timeframe: 1h
   cache_dir: data_cache
   bars: 15000             # ~1.7 years of 24/7 hourly bars
