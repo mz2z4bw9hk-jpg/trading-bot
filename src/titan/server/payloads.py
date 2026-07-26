@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from titan.core.jsonsafe import json_safe
+
 MAX_POINTS = 1500
 
 # Full JSON API surface: route name -> artifact file.
@@ -55,11 +57,16 @@ def downsample(df: pd.DataFrame, max_points: int = MAX_POINTS) -> pd.DataFrame:
 
 
 def json_payload(artifacts: Path, name: str) -> object | None:
-    """One of the plain JSON artifacts; ``None`` when it was never written."""
+    """One of the plain JSON artifacts; ``None`` when it was never written.
+
+    Sanitized on read as well as on write: artifacts produced before the
+    write-side guard existed can contain ``NaN``/``Infinity`` tokens, which
+    Python parses happily but ``JSONResponse`` will not serve.
+    """
     path = artifacts / JSON_ARTIFACTS[name]
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return json_safe(json.loads(path.read_text()))
 
 
 def equity_payload(artifacts: Path) -> dict | None:

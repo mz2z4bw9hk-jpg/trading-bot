@@ -16,6 +16,7 @@ import pandas as pd
 
 from titan.backtest.walkforward import WalkForwardReport
 from titan.core.config import TitanConfig
+from titan.core.jsonsafe import json_safe
 from titan.core.log import get_logger
 from titan.data.store import MarketDataset
 from titan.scanner.scanner import ScanResult
@@ -24,7 +25,10 @@ logger = get_logger(__name__)
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(json.dumps(payload, indent=1, default=str))
+    # allow_nan=False is unreachable after json_safe — it is here so a future
+    # payload type that slips past the sanitizer fails loudly instead of
+    # writing an artifact the dashboard API cannot serve.
+    path.write_text(json.dumps(json_safe(payload), indent=1, default=str, allow_nan=False))
 
 
 def write_walkforward_artifacts(

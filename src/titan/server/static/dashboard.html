@@ -238,6 +238,8 @@ const $ = s => document.querySelector(s);
 const fmtPct = (v, d=1) => (v==null||isNaN(v)) ? "—" : (100*v).toFixed(d) + "%";
 const fmtNum = (v, d=2) => (v==null||isNaN(v)) ? "—" : (+v).toFixed(d);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const LOADING = "loading…";
+const UNAVAILABLE = "unavailable — artifact missing or failed to load; check the server log";
 /* `titan export` bakes the payloads into window.TITAN_EMBEDDED so this same
    page also works as a single static file with no server behind it. */
 async function getJSON(url) {
@@ -591,6 +593,13 @@ function render() {
     $("#universe-table").innerHTML =
       `<tr><th>Symbol</th><th class="num">Bars</th><th class="num">Reliability</th><th>Issues</th></tr>` + rows;
   }
+  /* Every panel above renders only when its payload arrived. A panel still
+     showing the initial placeholder therefore has no payload — say so, rather
+     than leaving "loading…" on screen forever, which reads as a hung fetch
+     when the artifact is actually missing or the API returned an error. */
+  document.querySelectorAll(".empty").forEach(el => {
+    if (el.textContent.trim() === LOADING) el.textContent = UNAVAILABLE;
+  });
 }
 loadAll();
 </script>

@@ -1,0 +1,260 @@
+# Top 100 US equities by market cap + the ~100 largest crypto assets.
+#
+#   titan validate --config configs/top100.yaml
+#
+# THIS IS A BIG RUN. ~200 instruments is roughly 50x the data of a 4-symbol
+# config: budget 1-3 hours, and expect Yahoo to throttle partway through a
+# 200-symbol download (rerun; the data_cache makes the second pass cheap).
+#
+# EXPECT INSTRUMENTS TO BE DROPPED. Quality control is not cosmetic here:
+# many crypto assets listed below have under ~4 years of history, thin or
+# fabricated volume, or a ticker that was renamed (MATIC->POL, FTM->S), and
+# some are not carried by Yahoo at all. Those fail QC and are excluded from
+# the run rather than silently degrading it. Read artifacts/quality.json
+# afterwards to see exactly who survived and why the rest did not.
+#
+# Market-cap rankings drift; treat this list as a starting universe, not a
+# maintained index.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  cache_dir: data_cache
+  bars: 2500
+  min_history_bars: 1500
+  min_reliability: 0.85
+
+universe:
+  name: top100-equities-crypto
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY, asset_class: etf, sector: broad }
+    - { symbol: NVDA,  asset_class: equity, sector: technology }
+    - { symbol: AAPL,  asset_class: equity, sector: technology }
+    - { symbol: MSFT,  asset_class: equity, sector: technology }
+    - { symbol: GOOGL, asset_class: equity, sector: communication }
+    - { symbol: AMZN,  asset_class: equity, sector: consumer }
+    - { symbol: META,  asset_class: equity, sector: communication }
+    - { symbol: AVGO,  asset_class: equity, sector: technology }
+    - { symbol: TSLA,  asset_class: equity, sector: consumer }
+    - { symbol: BRK-B, asset_class: equity, sector: financials }
+    - { symbol: LLY,   asset_class: equity, sector: healthcare }
+    - { symbol: WMT,   asset_class: equity, sector: consumer }
+    - { symbol: JPM,   asset_class: equity, sector: financials }
+    - { symbol: V,     asset_class: equity, sector: financials }
+    - { symbol: ORCL,  asset_class: equity, sector: technology }
+    - { symbol: MA,    asset_class: equity, sector: financials }
+    - { symbol: XOM,   asset_class: equity, sector: energy }
+    - { symbol: COST,  asset_class: equity, sector: consumer }
+    - { symbol: UNH,   asset_class: equity, sector: healthcare }
+    - { symbol: NFLX,  asset_class: equity, sector: communication }
+    - { symbol: PG,    asset_class: equity, sector: consumer }
+    - { symbol: JNJ,   asset_class: equity, sector: healthcare }
+    - { symbol: HD,    asset_class: equity, sector: consumer }
+    - { symbol: ABBV,  asset_class: equity, sector: healthcare }
+    - { symbol: BAC,   asset_class: equity, sector: financials }
+    - { symbol: CRM,   asset_class: equity, sector: technology }
+    - { symbol: AMD,   asset_class: equity, sector: technology }
+    - { symbol: CVX,   asset_class: equity, sector: energy }
+    - { symbol: KO,    asset_class: equity, sector: consumer }
+    - { symbol: MRK,   asset_class: equity, sector: healthcare }
+    - { symbol: PEP,   asset_class: equity, sector: consumer }
+    - { symbol: TMO,   asset_class: equity, sector: healthcare }
+    - { symbol: LIN,   asset_class: equity, sector: materials }
+    - { symbol: ADBE,  asset_class: equity, sector: technology }
+    - { symbol: CSCO,  asset_class: equity, sector: technology }
+    - { symbol: ACN,   asset_class: equity, sector: technology }
+    - { symbol: MCD,   asset_class: equity, sector: consumer }
+    - { symbol: WFC,   asset_class: equity, sector: financials }
+    - { symbol: ABT,   asset_class: equity, sector: healthcare }
+    - { symbol: GE,    asset_class: equity, sector: industrials }
+    - { symbol: IBM,   asset_class: equity, sector: technology }
+    - { symbol: NOW,   asset_class: equity, sector: technology }
+    - { symbol: TXN,   asset_class: equity, sector: technology }
+    - { symbol: DIS,   asset_class: equity, sector: communication }
+    - { symbol: CAT,   asset_class: equity, sector: industrials }
+    - { symbol: QCOM,  asset_class: equity, sector: technology }
+    - { symbol: PM,    asset_class: equity, sector: consumer }
+    - { symbol: VZ,    asset_class: equity, sector: communication }
+    - { symbol: INTU,  asset_class: equity, sector: technology }
+    - { symbol: DHR,   asset_class: equity, sector: healthcare }
+    - { symbol: AXP,   asset_class: equity, sector: financials }
+    - { symbol: ISRG,  asset_class: equity, sector: healthcare }
+    - { symbol: AMGN,  asset_class: equity, sector: healthcare }
+    - { symbol: MS,    asset_class: equity, sector: financials }
+    - { symbol: NEE,   asset_class: equity, sector: utilities }
+    - { symbol: RTX,   asset_class: equity, sector: industrials }
+    - { symbol: PFE,   asset_class: equity, sector: healthcare }
+    - { symbol: T,     asset_class: equity, sector: communication }
+    - { symbol: SPGI,  asset_class: equity, sector: financials }
+    - { symbol: UNP,   asset_class: equity, sector: industrials }
+    - { symbol: GS,    asset_class: equity, sector: financials }
+    - { symbol: LOW,   asset_class: equity, sector: consumer }
+    - { symbol: PGR,   asset_class: equity, sector: financials }
+    - { symbol: ETN,   asset_class: equity, sector: industrials }
+    - { symbol: BKNG,  asset_class: equity, sector: consumer }
+    - { symbol: HON,   asset_class: equity, sector: industrials }
+    - { symbol: UBER,  asset_class: equity, sector: industrials }
+    - { symbol: TJX,   asset_class: equity, sector: consumer }
+    - { symbol: BLK,   asset_class: equity, sector: financials }
+    - { symbol: COP,   asset_class: equity, sector: energy }
+    - { symbol: C,     asset_class: equity, sector: financials }
+    - { symbol: SYK,   asset_class: equity, sector: healthcare }
+    - { symbol: VRTX,  asset_class: equity, sector: healthcare }
+    - { symbol: BSX,   asset_class: equity, sector: healthcare }
+    - { symbol: MU,    asset_class: equity, sector: technology }
+    - { symbol: ADP,   asset_class: equity, sector: industrials }
+    - { symbol: MDT,   asset_class: equity, sector: healthcare }
+    - { symbol: LMT,   asset_class: equity, sector: industrials }
+    - { symbol: ADI,   asset_class: equity, sector: technology }
+    - { symbol: PLD,   asset_class: equity, sector: real_estate }
+    - { symbol: MMC,   asset_class: equity, sector: financials }
+    - { symbol: SCHW,  asset_class: equity, sector: financials }
+    - { symbol: CB,    asset_class: equity, sector: financials }
+    - { symbol: KKR,   asset_class: equity, sector: financials }
+    - { symbol: AMAT,  asset_class: equity, sector: technology }
+    - { symbol: BX,    asset_class: equity, sector: financials }
+    - { symbol: DE,    asset_class: equity, sector: industrials }
+    - { symbol: SO,    asset_class: equity, sector: utilities }
+    - { symbol: GILD,  asset_class: equity, sector: healthcare }
+    - { symbol: LRCX,  asset_class: equity, sector: technology }
+    - { symbol: MDLZ,  asset_class: equity, sector: consumer }
+    - { symbol: INTC,  asset_class: equity, sector: technology }
+    - { symbol: ELV,   asset_class: equity, sector: healthcare }
+    - { symbol: ICE,   asset_class: equity, sector: financials }
+    - { symbol: CI,    asset_class: equity, sector: healthcare }
+    - { symbol: KLAC,  asset_class: equity, sector: technology }
+    - { symbol: PANW,  asset_class: equity, sector: technology }
+    - { symbol: REGN,  asset_class: equity, sector: healthcare }
+    - { symbol: SBUX,  asset_class: equity, sector: consumer }
+    - { symbol: DUK,   asset_class: equity, sector: utilities }
+    - { symbol: ANET,  asset_class: equity, sector: technology }
+    # --- crypto ---
+    - { symbol: BTC-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ETH-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: XRP-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: BNB-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SOL-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: DOGE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: ADA-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: TRX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: AVAX-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: LINK-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: TON-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SHIB-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: DOT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SUI-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: BCH-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: LTC-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: PEPE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: NEAR-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: UNI-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: APT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ICP-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ETC-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: XLM-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: HBAR-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: POL-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: CRO-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: RENDER-USD, asset_class: crypto, sector: crypto }
+    - { symbol: KAS-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: FIL-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ARB-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ATOM-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: VET-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: IMX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: OP-USD,     asset_class: crypto, sector: crypto }
+    - { symbol: INJ-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: TAO-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: MKR-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: GRT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: THETA-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: RUNE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: AAVE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: ALGO-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: FLOW-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: SEI-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: TIA-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: BONK-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: JUP-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: QNT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: LDO-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: EGLD-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: XTZ-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SAND-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: MANA-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: AXS-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: CHZ-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: EOS-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: GALA-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: NEO-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: KAVA-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: SNX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: CRV-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ZEC-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: MINA-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: DYDX-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: COMP-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: ENS-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: GMX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: 1INCH-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: BAT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ZIL-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ENJ-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: IOTA-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: KSM-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: DASH-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: WAVES-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: CAKE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: ROSE-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: ANKR-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: CELO-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: YFI-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SUSHI-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: LRC-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: OCEAN-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: STORJ-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: SKL-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: AR-USD,     asset_class: crypto, sector: crypto }
+    - { symbol: HOT-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ONE-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ICX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: QTUM-USD,   asset_class: crypto, sector: crypto }
+    - { symbol: OMG-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: ZRX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: RVN-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: SC-USD,     asset_class: crypto, sector: crypto }
+    - { symbol: DGB-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: XEM-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: LSK-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: STX-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: WIF-USD,    asset_class: crypto, sector: crypto }
+    - { symbol: FLOKI-USD,  asset_class: crypto, sector: crypto }
+
+cv:
+  n_folds: 5
+  embargo_bars: 10
+  min_train_bars: 756
+  test_bars: 252
+
+model:
+  members: [hgb, rf, logistic]
+  calibration: isotonic
+  # Trimmed from the 16 used on small universes: with ~200 instruments the
+  # panel is large enough that search breadth costs hours for little gain.
+  tuning_iterations: 8
+  internal_folds: 3
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 3.0
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.4
