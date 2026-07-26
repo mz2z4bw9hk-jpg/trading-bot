@@ -28,7 +28,7 @@ from titan.core.log import get_logger
 
 logger = get_logger(__name__)
 
-Timeframe = Literal["1wk", "1d", "4h", "1h", "30m", "15m", "5m", "1m"]
+Timeframe = Literal["1wk", "1d", "4h", "3h", "2h", "1h", "30m", "15m", "5m", "1m"]
 
 TRADING_DAYS_PER_YEAR = 252.0
 CALENDAR_DAYS_PER_YEAR = 365.0
@@ -38,6 +38,8 @@ _SESSION_BARS_PER_YEAR: dict[str, float] = {
     "1wk": 52.0,
     "1d": TRADING_DAYS_PER_YEAR,
     "4h": TRADING_DAYS_PER_YEAR * 2,
+    "3h": TRADING_DAYS_PER_YEAR * 2.5,
+    "2h": TRADING_DAYS_PER_YEAR * 3.25,
     "1h": TRADING_DAYS_PER_YEAR * 6.5,
     "30m": TRADING_DAYS_PER_YEAR * 13,
     "15m": TRADING_DAYS_PER_YEAR * 26,
@@ -50,6 +52,8 @@ _CONTINUOUS_BARS_PER_YEAR: dict[str, float] = {
     "1wk": 52.0,
     "1d": CALENDAR_DAYS_PER_YEAR,
     "4h": CALENDAR_DAYS_PER_YEAR * 6,
+    "3h": CALENDAR_DAYS_PER_YEAR * 8,
+    "2h": CALENDAR_DAYS_PER_YEAR * 12,
     "1h": CALENDAR_DAYS_PER_YEAR * 24,
     "30m": CALENDAR_DAYS_PER_YEAR * 48,
     "15m": CALENDAR_DAYS_PER_YEAR * 96,
@@ -57,7 +61,8 @@ _CONTINUOUS_BARS_PER_YEAR: dict[str, float] = {
     "1m": CALENDAR_DAYS_PER_YEAR * 1440,
 }
 
-# yfinance interval string per timeframe. Yahoo has no native 4h bar.
+# yfinance interval string per timeframe. Yahoo serves no multi-hour bar:
+# 2h/3h/4h are reachable only by aggregating 1h via data.resample_from.
 YAHOO_INTERVALS: dict[str, str] = {
     "1wk": "1wk",
     "1d": "1d",
@@ -174,4 +179,20 @@ def warn_on_calendar_mismatch(clock: BarClock, index: pd.DatetimeIndex) -> None:
 
 # Bars finer than one day. On a market that closes, these carry session
 # boundaries that calendar-naive checks misread as missing data.
-INTRADAY_TIMEFRAMES: frozenset[str] = frozenset({"4h", "1h", "30m", "15m", "5m", "1m"})
+INTRADAY_TIMEFRAMES: frozenset[str] = frozenset(
+    {"4h", "3h", "2h", "1h", "30m", "15m", "5m", "1m"}
+)
+
+
+# Ordering from coarsest to finest, for validating that a resample source
+# is genuinely finer than its target.
+_ORDER: tuple[str, ...] = (
+    "1wk", "1d", "4h", "3h", "2h", "1h", "30m", "15m", "5m", "1m",
+)
+
+
+def is_finer(source: str, target: str) -> bool:
+    """True when ``source`` bars are shorter than ``target`` bars."""
+    if source not in _ORDER or target not in _ORDER:
+        raise ValueError(f"unknown timeframe in ({source!r}, {target!r})")
+    return _ORDER.index(source) > _ORDER.index(target)

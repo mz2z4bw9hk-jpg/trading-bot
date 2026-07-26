@@ -20,6 +20,7 @@ from titan.core.timeframe import (
     UNVALIDATED_TIMEFRAMES,
     BarClock,
     Timeframe,
+    is_finer,
     resolve_bars_per_year,
 )
 
@@ -48,6 +49,26 @@ class DataConfig(BaseModel):
     # Required to run 1m/5m research: those intervals break the platform's
     # fill and cost assumptions rather than merely straining them.
     acknowledge_unvalidated_timeframe: bool = False
+    # Fetch at this (finer) interval and aggregate up to `timeframe`. Two uses:
+    # reaching a bar the vendor does not serve (Yahoo has no 2h/3h/4h), and
+    # repairing a sparsely-populated volume column by summing source bars.
+    resample_from: Timeframe | None = None
+    # Synthetic provider only: innovation scale of the planted AR(1) drift.
+    # None uses the generator default (realistically weak). Larger values are
+    # for control experiments: the pipeline MUST detect strong planted signal.
+    synthetic_drift_sigma: float | None = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _check_resample(self) -> DataConfig:
+        if self.resample_from is None:
+            return self
+        if not is_finer(self.resample_from, self.timeframe):
+            raise ValueError(
+                f"data.resample_from ({self.resample_from!r}) must be a FINER interval "
+                f"than data.timeframe ({self.timeframe!r}); bars can only be aggregated, "
+                "never subdivided"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_timeframe(self) -> DataConfig:
@@ -61,10 +82,6 @@ class DataConfig(BaseModel):
                 "true to run it anyway — the numbers are exploratory, not evidence."
             )
         return self
-    # Synthetic provider only: innovation scale of the planted AR(1) drift.
-    # None uses the generator default (realistically weak). Larger values are
-    # for control experiments: the pipeline MUST detect strong planted signal.
-    synthetic_drift_sigma: float | None = Field(None, gt=0)
 
 
 class UniverseItem(BaseModel):

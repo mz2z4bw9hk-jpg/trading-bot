@@ -16,10 +16,11 @@ import pandas as pd
 
 from titan.core.config import DataConfig, UniverseConfig
 from titan.core.log import get_logger
-from titan.core.timeframe import INTRADAY_TIMEFRAMES
+from titan.core.timeframe import INTRADAY_TIMEFRAMES, resolve_bars_per_year
 from titan.core.types import AssetClass, Instrument, Universe
 from titan.data.providers import DataProvider, SyntheticProvider, build_provider
 from titan.data.quality import DataQualityReport, assess_quality
+from titan.data.resample import RESAMPLE_RULES, resample_ohlcv, zero_volume_fraction
 from titan.data.schema import SchemaError, normalize_ohlcv
 
 logger = get_logger(__name__)
@@ -70,6 +71,16 @@ class MarketDataStore:
         ]
         continuous = bool(tradeable) and all(i.asset_class == "crypto" for i in tradeable)
         self._intraday_sessions = data_cfg.timeframe in INTRADAY_TIMEFRAMES and not continuous
+        self._continuous = continuous
+        # With resampling on, the provider is asked for enough SOURCE bars to
+        # yield data_cfg.bars target bars after aggregation.
+        self._source_bars = data_cfg.bars
+        if data_cfg.resample_from is not None:
+            ratio = (
+                resolve_bars_per_year(data_cfg.resample_from, continuous=continuous)
+                / resolve_bars_per_year(data_cfg.timeframe, continuous=continuous)
+            )
+            self._source_bars = int(data_cfg.bars * ratio)
         # Cache keyed by everything that determines the data. A stale cache
         # silently serving frames from a different configuration corrupts
         # research; live providers additionally get a per-day key so "most
@@ -79,6 +90,12 @@ class MarketDataStore:
             f"bars={data_cfg.bars}",
             f"seed={seed}",
             f"drift={data_cfg.synthetic_drift_sigma}",
+            # The cache stores post-resample frames, so both the interval that
+            # was fetched and the one it was aggregated to are part of a frame's
+            # identity. Omitting them serves 1d bars to a 1h run: same symbol,
+            # same bar count, wrong market — and nothing downstream can tell.
+            f"tf={data_cfg.timeframe}",
+            f"src={data_cfg.resample_from}",
         ]
         if self._provider.name != "synthetic":
             key_parts.append(time.strftime("%Y-%m-%d", time.gmtime()))
@@ -99,14 +116,33 @@ class MarketDataStore:
                 return pd.read_parquet(path)
             except Exception:  # corrupt cache: refetch
                 logger.warning("corrupt cache for %s, refetching", symbol)
-        raw = self._provider.fetch(symbol, self._cfg.bars)
+        raw = self._provider.fetch(symbol, self._source_bars)
         frame = normalize_ohlcv(raw, max_forward_fill=self._cfg.max_forward_fill)
+        frame = self._resample(symbol, frame)
         if use_cache:
             try:
                 frame.to_parquet(path)
             except Exception as exc:  # parquet engine missing: cache is best-effort
                 logger.debug("cache write failed for %s: %s", symbol, exc)
         return frame
+
+    def _resample(self, symbol: str, frame: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate source bars up to data.timeframe, if configured."""
+        if self._cfg.resample_from is None:
+            return frame
+        before_zero = zero_volume_fraction(frame)
+        out = resample_ohlcv(
+            frame,
+            RESAMPLE_RULES[self._cfg.timeframe],
+            within_sessions=not self._continuous,
+        )
+        after_zero = zero_volume_fraction(out)
+        logger.info(
+            "%s: resampled %s -> %s (%d -> %d bars); zero-volume %.1f%% -> %.1f%%",
+            symbol, self._cfg.resample_from, self._cfg.timeframe,
+            len(frame), len(out), 100 * before_zero, 100 * after_zero,
+        )
+        return out
 
     # ------------------------------------------------------------------ #
 

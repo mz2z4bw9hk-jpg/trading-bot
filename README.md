@@ -149,7 +149,7 @@ titan validate --config configs/style-longterm.yaml         # 1wk, holds of mont
 titan validate --config configs/style-swing.yaml            # 1d,  days to weeks
 titan validate --config configs/style-daytrading.yaml       # 1h,  one session
 titan validate --config configs/style-semiscalp.yaml        # 1h,  ~3h, equities
-titan validate --config configs/style-semiscalp-crypto.yaml # 1h,  ~3h, 24/7
+titan validate --config configs/style-semiscalp-crypto.yaml # 2h,  ~4h, 24/7
 titan validate --config configs/style-scalping.yaml         # 5m,  exploratory only
 ```
 
@@ -157,6 +157,12 @@ Bars-per-year is resolved from the timeframe and the universe's calendar
 (24/7 for an all-crypto book, 6.5-hour session otherwise) and drives every
 annualized figure plus vol-target sizing; it is part of the research
 fingerprint, so a model validated on `1h` refuses to scan a `1d` config.
+
+Multi-hour bars (`2h`/`3h`/`4h`) come from `data.resample_from`, which
+aggregates a finer interval. That also repairs Yahoo's hourly *crypto*
+series, whose volume column is empty on ~half its bars: summing source
+bars recovers real traded volume (conserved exactly) instead of leaving QC
+to refuse every symbol.
 
 `1m`/`5m` are **refused** unless the config explicitly acknowledges them:
 next-open fills are fiction at that frequency, the cost model is calibrated

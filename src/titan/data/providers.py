@@ -177,9 +177,10 @@ class YahooProvider:
             raise ImportError("YahooProvider requires: pip install 'titan[data]'") from exc
         if timeframe not in YAHOO_INTERVALS:
             raise ValueError(
-                f"Yahoo has no native {timeframe} bar; supported: "
-                f"{', '.join(sorted(YAHOO_INTERVALS))}. Resample from a finer "
-                "interval into CSV files and use the csv provider instead."
+                f"Yahoo has no native {timeframe} bar; it serves "
+                f"{', '.join(sorted(YAHOO_INTERVALS))}. Reach {timeframe} by "
+                f"aggregating: set data.resample_from to a finer interval "
+                f"(e.g. 1h) alongside data.timeframe: {timeframe}."
             )
         self._timeframe = timeframe
         self._interval = YAHOO_INTERVALS[timeframe]
@@ -232,5 +233,7 @@ def build_provider(data_cfg: DataConfig, universe_cfg: UniverseConfig, seed: int
             raise ValueError("data.csv_dir must be set for the csv provider")
         return CSVProvider(data_cfg.csv_dir)
     if data_cfg.provider == "yahoo":
-        return YahooProvider(data_cfg.timeframe)
+        # With resampling on, the vendor is asked for the FINER interval;
+        # the store aggregates it up to data.timeframe.
+        return YahooProvider(data_cfg.resample_from or data_cfg.timeframe)
     raise ValueError(f"unknown provider: {data_cfg.provider}")

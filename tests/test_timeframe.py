@@ -61,7 +61,13 @@ def test_override_wins_over_the_table():
 
 def test_unknown_timeframe_is_rejected():
     with pytest.raises(ValueError, match="unknown timeframe"):
-        resolve_bars_per_year("3h", continuous=False)
+        resolve_bars_per_year("7h", continuous=False)
+
+
+def test_multi_hour_timeframes_resolve():
+    """2h/3h/4h exist only via aggregation, but must annualize correctly."""
+    assert resolve_bars_per_year("2h", continuous=True) == pytest.approx(365 * 12)
+    assert resolve_bars_per_year("2h", continuous=False) == pytest.approx(252 * 3.25)
 
 
 def test_session_bars_per_day():

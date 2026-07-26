@@ -201,7 +201,7 @@ flagged by QC and below `cv.min_train_bars` the run refuses to start.
 | Swing | `configs/style-swing.yaml` | `1d` | days–weeks |
 | Day trading | `configs/style-daytrading.yaml` | `1h` | one session |
 | Semi-scalping (equities) | `configs/style-semiscalp.yaml` | `1h` | ~3 hours |
-| Semi-scalping (crypto) | `configs/style-semiscalp-crypto.yaml` | `1h` | ~3 hours |
+| Semi-scalping (crypto) | `configs/style-semiscalp-crypto.yaml` | `2h` | ~4 hours |
 | Scalping | `configs/style-scalping.yaml` | `5m` | minutes — exploratory only |
 
 **Semi-scalping is the floor of honest research here.** The objections that
@@ -233,6 +233,26 @@ Sharpe by sqrt(5.3) = 2.3x. The benchmark is excluded from that test (crypto
 books are routinely benchmarked against SPY). If the loaded data disagrees
 with the resolved convention, the run logs a `calendar mismatch` warning —
 set `data.bars_per_year` explicitly to settle it.
+
+**`data.resample_from` aggregates finer bars into your timeframe.** Two
+things need it. Yahoo serves no multi-hour bar, so `2h`/`3h`/`4h` are
+reachable only by aggregating `1h`. And Yahoo's *hourly crypto* series
+carries no volume on roughly half its bars — which QC correctly refuses,
+since OBV, dollar-volume and up/down-volume features are built from that
+column. Summing source bars leaves a target bar empty only where every
+source bar in it was empty, so aggregating trades resolution for a real
+volume column. It recovers traded volume; it does not invent any (total
+volume is conserved exactly, and a test enforces it).
+
+```yaml
+data: { provider: yahoo, timeframe: 2h, resample_from: 1h }
+```
+
+Bars are stamped at the **start** of the interval they cover, matching the
+convention the engine assumes — stamping right would date a bar before data
+inside it and leak the future into every feature. On a market that closes,
+aggregation never fuses bars across the overnight gap into one bar that never
+traded as one.
 
 **QC is session-aware below daily.** On a market that closes, an hourly
 series carries an overnight boundary every seventh bar. Gap detection would
@@ -318,6 +338,8 @@ gate decide. Never hand-promote.
 | `not validated research on this platform` | `1m`/`5m` refused by design — see §6b before setting `data.acknowledge_unvalidated_timeframe` |
 | `Yahoo keeps at most N days` | vendor history cap for that interval; the run continues on what exists, but check `quality.json` and the regime breakdown |
 | `calendar mismatch` warning | the resolved bars-per-year disagrees with the loaded data (usually a 24/7 book on a session calendar) — set `data.bars_per_year` |
+| `no instrument passed data QC` on an intraday crypto run | Yahoo's intraday crypto volume is ~50% empty; aggregate with `data.resample_from: 1h` at a `2h`/`3h`/`4h` timeframe, or use exchange CSV exports |
+| `Yahoo has no native 2h bar` | multi-hour bars come from aggregation — set `data.resample_from: 1h` |
 | `titan track resolve` exits 3 | that IS the CUSUM alarm — run `validate` to produce a challenger and let the promotion gate decide |
 | Signal shows a wide P band | thin calibration evidence near that score; the conservative gate already priced that in |
 | Slow validate | lower `tuning_iterations` / `internal_folds`, or trim `members` |
