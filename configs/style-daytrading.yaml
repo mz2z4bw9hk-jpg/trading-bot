@@ -29,8 +29,8 @@ data:
   provider: yahoo
   timeframe: 1h
   cache_dir: data_cache
-  bars: 4500              # ~2 years of hourly bars: Yahoo's ceiling
-  min_history_bars: 2000
+  bars: 3500              # ~2 years of hourly bars: Yahoo's ceiling
+  min_history_bars: 3000
   min_reliability: 0.85
 
 universe:
@@ -52,8 +52,8 @@ labels:
 cv:
   n_folds: 4
   embargo_bars: 14        # two sessions of purge around each test window
-  min_train_bars: 1600    # ~1 year of hourly bars
-  test_bars: 500          # ~3 months
+  min_train_bars: 1400    # ~200 sessions
+  test_bars: 400          # ~60 sessions
 
 regime:
   min_train_bars: 500

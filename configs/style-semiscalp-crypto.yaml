@@ -1,0 +1,74 @@
+# SEMI-SCALPING (crypto) — hourly bars, holds of about three hours.
+#
+#   titan validate --config configs/style-semiscalp-crypto.yaml
+#
+# Crypto is the better venue for hourly research, for one unglamorous reason:
+# Yahoo's 730-day hourly cap yields ~3,500 bars on an equity that trades 6.5
+# hours a day, and ~17,500 on an asset that never closes. Five times the
+# evidence for the same calendar window, with no overnight gaps for the
+# barrier logic to trip over.
+#
+# The annualization constant follows automatically: with every tradeable leg
+# in crypto, the run annualizes on 24/7 (8,760 hourly bars per year) rather
+# than the 1,638 of an equity session. Getting that wrong would misprint every
+# Sharpe by 2.3x and oversize every vol-targeted position by the same factor.
+#
+# The benchmark is BTC-USD, not SPY, deliberately: the regime detector fits on
+# the benchmark, and an equity benchmark would feed it a 7-bar day while the
+# instruments trade 24 — a calendar mismatch inside a single run.
+#
+# Barrier geometry matches configs/style-semiscalp.yaml; see the explanation
+# of the sqrt(horizon) reachability scaling there.
+#
+# Costs below are a placeholder for a liquid centralized venue. Crypto spreads
+# vary enormously by venue and by asset — set them to what you actually pay,
+# and sweep 2x-4x per VALIDATION.md section 3. At an hourly cadence the cost
+# sweep is the decisive test, not a formality.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1h
+  cache_dir: data_cache
+  bars: 15000             # ~1.7 years of 24/7 hourly bars
+  min_history_bars: 10000
+  min_reliability: 0.85
+
+universe:
+  name: semiscalp-crypto
+  benchmark: BTC-USD
+  instruments:
+    - { symbol: BTC-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: ETH-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: SOL-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: XRP-USD,  asset_class: crypto, sector: crypto }
+    - { symbol: DOGE-USD, asset_class: crypto, sector: crypto }
+    - { symbol: LINK-USD, asset_class: crypto, sector: crypto }
+
+labels:
+  horizon_bars: 3
+  tp_sigma: 1.10
+  sl_sigma: 0.82
+
+cv:
+  n_folds: 5
+  embargo_bars: 10
+  min_train_bars: 3500    # ~5 months of 24/7 hourly bars
+  test_bars: 1300         # ~7 weeks per fold
+
+regime:
+  min_train_bars: 1000
+
+backtest:
+  costs:
+    commission_bps: 2.0
+    spread_bps: 5.0
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.3

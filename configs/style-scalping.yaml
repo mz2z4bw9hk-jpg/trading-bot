@@ -41,8 +41,8 @@ data:
   timeframe: 5m
   acknowledge_unvalidated_timeframe: true
   cache_dir: data_cache
-  bars: 4000              # ~60 days: Yahoo's ceiling for 5m bars
-  min_history_bars: 2500
+  bars: 3200              # ~60 days: Yahoo's ceiling for 5m bars
+  min_history_bars: 3000
   min_reliability: 0.85
 
 universe:

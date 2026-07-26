@@ -9,6 +9,7 @@ perfectly reasonable.
 from __future__ import annotations
 
 import copy
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -244,3 +245,54 @@ def test_yahoo_does_not_clamp_daily_requests(caplog):
 
     assert days > 2500  # fetched generously, then trimmed
     assert "at most" not in caplog.text
+
+
+# ------------------------------------------------- shipped style configs --
+
+STYLE_CONFIGS = sorted(pathlib.Path("configs").glob("style-*.yaml"))
+
+# The validated daily config pairs tp 2.0 / sl 1.5 with a 10-bar horizon.
+_DAILY_TP_REACH = 2.0 / np.sqrt(10)
+_DAILY_SL_REACH = 1.5 / np.sqrt(10)
+
+
+def test_style_configs_exist():
+    assert STYLE_CONFIGS, "expected shipped style-*.yaml configs"
+
+
+@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
+def test_style_config_loads_and_resolves_a_clock(path):
+    assert bar_clock(load_config(path)).bars_per_year > 0
+
+
+@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
+def test_style_config_fold_geometry_fits_its_history_floor(path):
+    """A config whose folds need more bars than QC guarantees cannot run."""
+    cfg = load_config(path)
+    needed = cfg.cv.min_train_bars + cfg.cv.n_folds * cfg.cv.test_bars
+    assert needed <= cfg.data.min_history_bars, (
+        f"{path.name}: folds need {needed} bars but min_history_bars is "
+        f"{cfg.data.min_history_bars}"
+    )
+
+
+@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
+def test_style_config_barriers_stay_reachable_within_the_horizon(path):
+    """Barriers are per-bar sigma and are NOT horizon-scaled.
+
+    Only sqrt(horizon) sigmas of cumulative move are available, so carrying
+    the daily tp_sigma onto a short horizon asks price to travel further than
+    the horizon allows: nearly every label times out and the model trains on
+    an almost-constant target. Each config must hold roughly the same
+    reachability ratio as the validated daily geometry.
+    """
+    cfg = load_config(path)
+    horizon = cfg.labels.horizon_bars
+    tp_reach = cfg.labels.tp_sigma / np.sqrt(horizon)
+    sl_reach = cfg.labels.sl_sigma / np.sqrt(horizon)
+
+    assert tp_reach == pytest.approx(_DAILY_TP_REACH, rel=0.35), (
+        f"{path.name}: tp_sigma {cfg.labels.tp_sigma} over a {horizon}-bar horizon "
+        f"gives reachability {tp_reach:.3f} vs the validated {_DAILY_TP_REACH:.3f}"
+    )
+    assert sl_reach == pytest.approx(_DAILY_SL_REACH, rel=0.35)

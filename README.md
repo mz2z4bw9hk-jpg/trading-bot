@@ -145,10 +145,12 @@ deflated-Sharpe reading — before acting on anything.
 ready-made configs cover the four usual styles:
 
 ```bash
-titan validate --config configs/style-longterm.yaml    # 1wk, holds of months
-titan validate --config configs/style-swing.yaml       # 1d,  days to weeks
-titan validate --config configs/style-daytrading.yaml  # 1h,  hours to days
-titan validate --config configs/style-scalping.yaml    # 5m,  exploratory only
+titan validate --config configs/style-longterm.yaml         # 1wk, holds of months
+titan validate --config configs/style-swing.yaml            # 1d,  days to weeks
+titan validate --config configs/style-daytrading.yaml       # 1h,  one session
+titan validate --config configs/style-semiscalp.yaml        # 1h,  ~3h, equities
+titan validate --config configs/style-semiscalp-crypto.yaml # 1h,  ~3h, 24/7
+titan validate --config configs/style-scalping.yaml         # 5m,  exploratory only
 ```
 
 Bars-per-year is resolved from the timeframe and the universe's calendar

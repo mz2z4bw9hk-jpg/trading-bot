@@ -199,8 +199,26 @@ flagged by QC and below `cv.min_train_bars` the run refuses to start.
 |---|---|---|---|
 | Position / long-term | `configs/style-longterm.yaml` | `1wk` | months |
 | Swing | `configs/style-swing.yaml` | `1d` | days–weeks |
-| Day trading | `configs/style-daytrading.yaml` | `1h` | hours–days |
-| Scalping | `configs/style-scalping.yaml` | `5m` | minutes |
+| Day trading | `configs/style-daytrading.yaml` | `1h` | one session |
+| Semi-scalping (equities) | `configs/style-semiscalp.yaml` | `1h` | ~3 hours |
+| Semi-scalping (crypto) | `configs/style-semiscalp-crypto.yaml` | `1h` | ~3 hours |
+| Scalping | `configs/style-scalping.yaml` | `5m` | minutes — exploratory only |
+
+**Semi-scalping is the floor of honest research here.** The objections that
+make `5m` exploratory weaken as the bar grows and are merely strains by the
+hourly bar: a round trip costs ~11% of a 3-hour target move (versus ~27% at
+five minutes, where it swallows the edge outright), and a next-open fill over
+an hour is a fair model of an order you can actually place. Crypto is the
+better venue for it — Yahoo's 730-day hourly cap yields ~3,500 bars on an
+equity trading 6.5 hours a day and ~17,500 on an asset that never closes.
+
+**Shortening the horizon means re-cutting the barriers.** Barriers sit at
+±k·σ where σ is *per-bar* volatility — they are not scaled by the horizon.
+Only √horizon sigmas of cumulative move are available, so carrying the daily
+`tp_sigma: 2.0` onto a 3-bar horizon asks price to travel 2σ when 1.7σ is on
+offer: nearly every label times out and the model trains on an almost
+constant target. Each shipped config holds the validated daily reachability
+ratio (`tp_sigma / √horizon ≈ 0.63`), and a test enforces it.
 
 Everything annualized — Sharpe, CAGR, annual vol, the vol-targeting divisor,
 the regime detector's trend thresholds, the VaR window — derives from

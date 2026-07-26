@@ -18,7 +18,7 @@ data:
   timeframe: 1wk
   cache_dir: data_cache
   bars: 1500              # ~29 years where available
-  min_history_bars: 400   # ~8 years of weekly bars
+  min_history_bars: 450   # ~9 years of weekly bars
   min_reliability: 0.85
 
 universe:

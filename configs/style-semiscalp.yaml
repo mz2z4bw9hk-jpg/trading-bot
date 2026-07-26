@@ -1,0 +1,74 @@
+# SEMI-SCALPING (equities) — hourly bars, holds of about three hours.
+#
+#   titan validate --config configs/style-semiscalp.yaml
+#
+# This is the shortest hold the platform can validate honestly. The reasons
+# 1m/5m research is refused (fills modelled at the next bar's open, a cost
+# model calibrated for daily turnover, order-book state absent from OHLCV)
+# weaken as the bar grows, and by the hourly bar they are strains rather than
+# breaks: a market-on-open order over an hour is a fair model, and a ~7 bp
+# round trip is ~11% of a 3-hour target move — real drag, priced in by the
+# adaptive gate, but not the ~27% that makes 5-minute research pointless.
+#
+# BARRIER GEOMETRY IS NOT THE DAILY DEFAULT, AND MUST NOT BE.
+# Barriers sit at +-k*sigma where sigma is the PER-BAR volatility; they are
+# not scaled by the horizon. The validated daily config pairs tp 2.0 / sl 1.5
+# with a 10-bar horizon, i.e. barriers at 0.63 / 0.47 sigma per sqrt(bar).
+# Reusing tp 2.0 over a 3-bar horizon asks price to travel 2 sigma when only
+# sqrt(3) = 1.7 sigma of cumulative move is available, so nearly every label
+# times out and the model learns from mush. The values below preserve the
+# daily reachability ratio at a 3-bar horizon.
+#
+# DATA CEILING: Yahoo keeps 730 calendar days of hourly bars, which is about
+# 3,500 bars for a US equity. That is enough rows for the fold geometry below
+# and only two years of market. Read the regime breakdown before believing
+# anything here: two years may hold one or two regimes, and a walk-forward
+# that never saw a bear market has not been tested against one.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1h
+  cache_dir: data_cache
+  bars: 3500              # Yahoo's practical hourly ceiling for equities
+  min_history_bars: 3000
+  min_reliability: 0.85
+
+universe:
+  name: semiscalp-equities
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY,  asset_class: etf,    sector: broad }
+    - { symbol: QQQ,  asset_class: etf,    sector: broad }
+    - { symbol: MU,   asset_class: equity, sector: technology }
+    - { symbol: NVDA, asset_class: equity, sector: technology }
+    - { symbol: AAPL, asset_class: equity, sector: technology }
+    - { symbol: TSLA, asset_class: equity, sector: consumer }
+
+labels:
+  horizon_bars: 3         # ~3 hours: under half a session
+  tp_sigma: 1.10          # 2.0 * sqrt(3/10) — daily reachability, 3-bar horizon
+  sl_sigma: 0.82          # 1.5 * sqrt(3/10)
+
+cv:
+  n_folds: 4
+  embargo_bars: 10        # comfortably longer than the 3-bar label lifetime
+  min_train_bars: 1300    # ~200 sessions
+  test_bars: 400          # ~60 sessions per fold
+
+regime:
+  min_train_bars: 400
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 5.0       # crossed far more often than on daily bars
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.3
