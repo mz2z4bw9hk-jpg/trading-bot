@@ -190,6 +190,55 @@ volume column, which raw index series often lack. Export as much history
 as your TradingView plan allows; fewer than ~1500 daily bars will be
 flagged by QC and below `cv.min_train_bars` the run refuses to start.
 
+## 6b. Choosing a timeframe
+
+`data.timeframe` sets what one bar means: `1wk`, `1d`, `4h`, `1h`, `30m`,
+`15m`, `5m`, `1m`. Four ready-made configs cover the usual styles:
+
+| Style | Config | Bar | Typical hold |
+|---|---|---|---|
+| Position / long-term | `configs/style-longterm.yaml` | `1wk` | months |
+| Swing | `configs/style-swing.yaml` | `1d` | days–weeks |
+| Day trading | `configs/style-daytrading.yaml` | `1h` | hours–days |
+| Scalping | `configs/style-scalping.yaml` | `5m` | minutes |
+
+Everything annualized — Sharpe, CAGR, annual vol, the vol-targeting divisor,
+the regime detector's trend thresholds, the VaR window — derives from
+bars-per-year, which is resolved from the timeframe. It is also part of the
+research fingerprint, so a model validated on `1h` refuses to scan a `1d`
+config rather than reporting numbers about a market it never saw.
+
+**Session vs 24/7.** A universe whose tradeable instruments are all crypto
+annualizes on a 365-day calendar; anything with an equity or ETF leg uses the
+6.5-hour session calendar. At `1h` those differ by 5.3x, which moves every
+Sharpe by sqrt(5.3) = 2.3x. The benchmark is excluded from that test (crypto
+books are routinely benchmarked against SPY). If the loaded data disagrees
+with the resolved convention, the run logs a `calendar mismatch` warning —
+set `data.bars_per_year` explicitly to settle it.
+
+**Shorter bars are not more research, they are less.** Two things get worse
+as the bar shrinks:
+
+- *Costs scale with how often you cross the spread.* Same calendar exposure
+  at `1h` instead of `1d` means ~6.5x the round trips. A 4 bp round trip that
+  is noise against a two-week move is the entire edge against a one-hour one.
+- *Vendors keep less intraday history.* Yahoo's caps are hard: 730 days of
+  `1h`, 60 days of `5m`/`15m`/`30m`, 7 days of `1m`. Asking for more does not
+  error — it silently returns less. TITAN clamps the request and warns, but
+  no clamp creates history that isn't there. 4,700 hourly bars spanning two
+  years is plenty of *rows* and only one or two *regimes*; read the regime
+  breakdown before believing a walk-forward that never saw a bear market.
+
+**`1m` and `5m` are refused** unless the config sets
+`data.acknowledge_unvalidated_timeframe: true`. The machinery runs fine; the
+evidence cannot meet the platform's own bar. Fills are modelled at the next
+bar's open, which is a fair model of a market-on-open order over a day and
+fiction over a minute. The cost model is calibrated for daily turnover. And
+sub-minute price formation is driven by order-book state — queue position,
+depth, order-flow imbalance — that OHLCV bars simply do not contain. Honest
+scalping research needs order-book data and fills calibrated to your broker,
+not a smaller bar.
+
 ## 7. Tuning the knobs that matter
 
 All in your YAML config (validated by pydantic — typos fail loudly):
@@ -238,7 +287,10 @@ gate decide. Never hand-promote.
 | `training window too small` | not enough history for `cv.min_train_bars` / internal folds — more bars or fewer folds |
 | Instrument missing from results | failed QC; see `artifacts/quality.json` and the log line explaining why |
 | Yahoo fetch fails | no network egress from your environment; use `csv` |
-| `CONFIG MISMATCH` on scan/resolve | you validated with one `--config` and scanned with another (bare `titan scan` = `configs/default.yaml`) — pass the config the model was validated with |
+| `CONFIG MISMATCH` on scan/resolve | you validated with one `--config` and scanned with another (bare `titan scan` = `configs/default.yaml`) — pass the config the model was validated with. Changing `data.timeframe` changes the fingerprint too |
+| `not validated research on this platform` | `1m`/`5m` refused by design — see §6b before setting `data.acknowledge_unvalidated_timeframe` |
+| `Yahoo keeps at most N days` | vendor history cap for that interval; the run continues on what exists, but check `quality.json` and the regime breakdown |
+| `calendar mismatch` warning | the resolved bars-per-year disagrees with the loaded data (usually a 24/7 book on a session calendar) — set `data.bars_per_year` |
 | `titan track resolve` exits 3 | that IS the CUSUM alarm — run `validate` to produce a challenger and let the promotion gate decide |
 | Signal shows a wide P band | thin calibration evidence near that score; the conservative gate already priced that in |
 | Slow validate | lower `tuning_iterations` / `internal_folds`, or trim `members` |

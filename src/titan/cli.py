@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from titan import __version__
-from titan.core.config import TitanConfig, load_config, research_fingerprint
+from titan.core.config import TitanConfig, bar_clock, load_config, research_fingerprint
 from titan.core.log import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -120,9 +120,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     # ---- scan with the freshly validated bundle ------------------------
     cost_model = CostModel(cfg.backtest.costs)
+    ppy = bar_clock(cfg).bars_per_year
     generator = SignalGenerator(cfg.signals, cfg.labels, cfg.risk, cost_model,
-                                cfg.backtest.max_positions)
-    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed)
+                                cfg.backtest.max_positions, periods_per_year=ppy)
+    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed, periods_per_year=ppy)
     bench = dataset.benchmark_frame
     detector.fit(bench.iloc[: max(len(bench) - 63, cfg.regime.min_train_bars)])
     scanner = MarketScanner(
@@ -232,11 +233,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
     panel = FeatureMatrixBuilder(cfg.features).build(dataset)
+    ppy = bar_clock(cfg).bars_per_year
     generator = SignalGenerator(
         cfg.signals, cfg.labels, cfg.risk, CostModel(cfg.backtest.costs),
-        cfg.backtest.max_positions,
+        cfg.backtest.max_positions, periods_per_year=ppy,
     )
-    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed)
+    detector = RegimeDetector(cfg.regime, seed=cfg.run.seed, periods_per_year=ppy)
     bench = dataset.benchmark_frame
     detector.fit(bench.iloc[: max(len(bench) - 63, cfg.regime.min_train_bars)])
     scanner = MarketScanner(

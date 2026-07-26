@@ -32,8 +32,10 @@ from titan.backtest.costs import CostModel
 from titan.backtest.engine import BacktestEngine, BacktestResult, TradePlan
 from titan.backtest.metrics import deflated_sharpe_ratio
 from titan.backtest.monte_carlo import BootstrapReport, bootstrap_analysis, risk_of_ruin
-from titan.core.config import TitanConfig
+from titan.core.config import TitanConfig, bar_clock
 from titan.core.log import get_logger
+from titan.core.timeframe import TRADING_DAYS_PER_YEAR as TRADING_DAYS
+from titan.core.timeframe import warn_on_calendar_mismatch
 from titan.core.types import Regime, VolState
 from titan.data.store import MarketDataset
 from titan.explain.evidence import LocalExplainer
@@ -186,8 +188,16 @@ class WalkForwardRunner:
         logger.info("walk-forward: %d folds over %d panel rows", len(folds), len(X_all))
 
         cost_model = CostModel(cfg.backtest.costs)
+        clock = bar_clock(cfg)
+        warn_on_calendar_mismatch(clock, dataset.benchmark_frame.index)
+        ppy = clock.bars_per_year
+        logger.info(
+            "bar clock: %s, %.0f bars/year (%s calendar)",
+            clock.timeframe, ppy, "24/7" if clock.continuous else "session",
+        )
         generator = SignalGenerator(
-            cfg.signals, cfg.labels, cfg.risk, cost_model, cfg.backtest.max_positions
+            cfg.signals, cfg.labels, cfg.risk, cost_model, cfg.backtest.max_positions,
+            periods_per_year=ppy,
         )
 
         # Precomputed causal per-symbol volatility (cheap candidate pre-screen).
@@ -238,7 +248,9 @@ class WalkForwardRunner:
             # Regime: fit on the training window of the benchmark, frozen roll.
             bench = dataset.benchmark_frame
             bench_train = bench.loc[: fold.train_end]
-            detector = RegimeDetector(cfg.regime, seed=seed).fit(bench_train)
+            detector = RegimeDetector(
+                cfg.regime, seed=seed, periods_per_year=ppy
+            ).fit(bench_train)
             regime_table = detector.transform(bench.loc[: fold.test_end])
             regime_test = regime_table.loc[fold.test_start :]
             regime_tables.append(regime_test)
@@ -354,9 +366,11 @@ class WalkForwardRunner:
             universe=dataset.universe,
             returns=returns_wide,
             regimes=regimes["regime"],
+            var_window_bars=max(round(ppy), 2),
         )
         engine = BacktestEngine(
-            cfg.backtest, cost_model, universe=dataset.universe, risk_approver=risk_engine
+            cfg.backtest, cost_model, universe=dataset.universe, risk_approver=risk_engine,
+            periods_per_year=ppy,
         )
         oos_start = folds[0].test_start
         result = engine.run(dataset.frames, plans, start=oos_start)
@@ -370,7 +384,9 @@ class WalkForwardRunner:
         gate = p_pool >= cfg.signals.min_probability
         high_conf_hit = float(y_pool[gate].mean()) if gate.any() else float("nan")
 
-        boot = bootstrap_analysis(result.returns, n_sims=1000, avg_block=10.0, seed=seed)
+        boot = bootstrap_analysis(
+            result.returns, n_sims=1000, avg_block=10.0, seed=seed, periods_per_year=ppy
+        )
 
         returns = result.returns.dropna()
         sr_period = (
@@ -378,7 +394,7 @@ class WalkForwardRunner:
         )
         skew = float(sstats.skew(returns)) if len(returns) > 10 else 0.0
         kurt = float(sstats.kurtosis(returns, fisher=False)) if len(returns) > 10 else 3.0
-        sr_var_proxy = float(np.var([r / np.sqrt(252.0) for r in [
+        sr_var_proxy = float(np.var([r / np.sqrt(ppy) for r in [
             boot.sharpe_ci[0], boot.sharpe_median, boot.sharpe_ci[1]
         ]]))
         dsr_sensitivity = {
@@ -389,7 +405,7 @@ class WalkForwardRunner:
         }
 
         trades_per_year = (
-            len(result.trades) / (len(result.equity) / 252.0) if len(result.equity) else 0.0
+            len(result.trades) / (len(result.equity) / ppy) if len(result.equity) else 0.0
         )
         ruin = risk_of_ruin(
             np.array([t.pnl_fraction for t in result.trades]),
@@ -397,7 +413,7 @@ class WalkForwardRunner:
             seed=seed,
         )
 
-        regime_breakdown = self._regime_breakdown(result.returns, regimes["regime"])
+        regime_breakdown = self._regime_breakdown(result.returns, regimes["regime"], ppy)
 
         if last_ensemble is not None and len(folds) > 0:
             f = folds[-1]
@@ -439,7 +455,9 @@ class WalkForwardRunner:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _regime_breakdown(returns: pd.Series, regimes: pd.Series) -> dict[str, dict]:
+    def _regime_breakdown(
+        returns: pd.Series, regimes: pd.Series, periods_per_year: float = TRADING_DAYS
+    ) -> dict[str, dict]:
         joined = pd.DataFrame({"ret": returns}).join(regimes.rename("regime"), how="left")
         joined["regime"] = joined["regime"].ffill()
         out: dict[str, dict] = {}
@@ -447,8 +465,10 @@ class WalkForwardRunner:
             r = group["ret"].dropna()
             if len(r) < 5:
                 continue
-            ann = float(r.mean() * 252.0)
-            sharpe = float(r.mean() / r.std() * np.sqrt(252.0)) if r.std() > 0 else 0.0
+            ann = float(r.mean() * periods_per_year)
+            sharpe = (
+                float(r.mean() / r.std() * np.sqrt(periods_per_year)) if r.std() > 0 else 0.0
+            )
             out[str(regime)] = {
                 "days": len(r),
                 "ann_return": round(ann, 4),

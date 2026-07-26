@@ -37,20 +37,25 @@ class RiskEngine:
         returns: pd.DataFrame | None = None,
         regimes: pd.Series | None = None,
         corr_window: int = 63,
+        var_window_bars: int = 252,
     ) -> None:
         """
         Parameters
         ----------
         returns:
-            Wide (date x symbol) daily returns for correlation estimates.
+            Wide (date x symbol) per-bar returns for correlation estimates.
         regimes:
             Regime label per date (strings from :class:`titan.core.types.Regime`).
+        var_window_bars:
+            Lookback for historical VaR/CVaR — one year expressed in bars, so
+            it must track the run's timeframe rather than assume daily.
         """
         self._cfg = cfg
         self._universe = universe
         self._returns = returns
         self._regimes = regimes
         self._corr_window = corr_window
+        self._var_window_bars = var_window_bars
 
     # ------------------------------------------------------------------ #
 
@@ -146,7 +151,7 @@ class RiskEngine:
         cols = [s for s in weights if s in self._returns.columns]
         if not cols:
             return 0.0, 0.0
-        window = self._returns.loc[:when, cols].tail(252)
+        window = self._returns.loc[:when, cols].tail(self._var_window_bars)
         if len(window) < 60:
             return 0.0, 0.0
         w = np.array([weights[s] for s in cols])

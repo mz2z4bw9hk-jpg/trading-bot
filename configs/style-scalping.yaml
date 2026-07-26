@@ -1,0 +1,79 @@
+# SCALPING — 5-minute bars. THIS CONFIG PRODUCES EXPLORATORY NUMBERS ONLY.
+#
+#   titan validate --config configs/style-scalping.yaml
+#
+# The platform refuses 1m/5m research by default. This config sets
+# data.acknowledge_unvalidated_timeframe to override that refusal, so run it
+# knowing exactly what the override buys you and what it does not.
+#
+# THREE REASONS THE OUTPUT IS NOT EVIDENCE:
+#
+# 1. FILLS ARE FICTION. The engine fills at the next bar's open. Over a day
+#    that models a market-on-open order fairly. Over five minutes, the printed
+#    open is not a price a retail order reliably receives — the backtest is
+#    crediting you with fills you would not get.
+#
+# 2. THE SPREAD IS THE SIGNAL. The cost model is a fixed spread plus a
+#    square-root impact term, calibrated for daily turnover. A round trip
+#    costs ~4 bp. Realistic five-minute edges on OHLCV bars are smaller than
+#    that, so the honest expected value of nearly every candidate is negative
+#    and the gate should — correctly — emit almost nothing.
+#
+# 3. THE FEATURES CANNOT SEE THE MARKET. Sub-minute price formation is driven
+#    by order-book state: queue position, depth, order flow imbalance. OHLCV
+#    bars contain none of it. The model is not being asked a hard question,
+#    it is being asked a question the data cannot answer.
+#
+# Yahoo also keeps only 60 calendar days of 5-minute bars — enough rows to
+# satisfy the fold geometry, but two months of a single market regime. Any
+# statistic below is a description of one recent stretch of one market.
+#
+# If you want this to be real research, the honest path is order-book data
+# and a cost model calibrated to your actual fills — not this config.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 5m
+  acknowledge_unvalidated_timeframe: true
+  cache_dir: data_cache
+  bars: 4000              # ~60 days: Yahoo's ceiling for 5m bars
+  min_history_bars: 2500
+  min_reliability: 0.85
+
+universe:
+  name: scalping
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY,  asset_class: etf,    sector: broad }
+    - { symbol: QQQ,  asset_class: etf,    sector: broad }
+    - { symbol: NVDA, asset_class: equity, sector: technology }
+    - { symbol: TSLA, asset_class: equity, sector: consumer }
+
+labels:
+  horizon_bars: 12        # one hour
+  tp_sigma: 2.0
+  sl_sigma: 1.5
+
+cv:
+  n_folds: 3
+  embargo_bars: 24        # two hours of purge
+  min_train_bars: 1500
+  test_bars: 500
+
+regime:
+  min_train_bars: 500
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 8.0       # be pessimistic; at this frequency it dominates
+    impact_coefficient: 0.15
+
+risk:
+  target_annual_vol: 0.08
+  risk_per_trade_pct: 0.2

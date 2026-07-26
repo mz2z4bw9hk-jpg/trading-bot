@@ -1,0 +1,69 @@
+# DAY TRADING — hourly bars, positions closed within days rather than held.
+#
+#   titan validate --config configs/style-daytrading.yaml
+#
+# READ THIS BEFORE TRUSTING THE OUTPUT.
+#
+# Yahoo keeps at most 730 calendar days of hourly bars. That is a vendor
+# limit, not a setting: the fetch is clamped to it and you get roughly 4,700
+# bars spanning two years. Two years is enough BARS for the fold geometry
+# below, but it is only two years of MARKET — likely one or two regimes. A
+# walk-forward that never saw a bear market has not been tested against one,
+# however many bars it consumed. Read the regime breakdown before anything
+# else, and treat a result that lives entirely in one regime as untested.
+#
+# Costs bite roughly 6.5x harder here than on daily bars, because you pay the
+# round trip 6.5x more often for the same calendar exposure. The spread below
+# is deliberately not the daily default — set it to what your venue actually
+# charges, and sweep it 2x-4x per VALIDATION.md §3.
+#
+# For more history than Yahoo will serve, export hourly bars from TradingView
+# into data_tv/ and switch to provider: csv.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1h
+  cache_dir: data_cache
+  bars: 4500              # ~2 years of hourly bars: Yahoo's ceiling
+  min_history_bars: 2000
+  min_reliability: 0.85
+
+universe:
+  name: daytrading
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY,  asset_class: etf,    sector: broad }
+    - { symbol: QQQ,  asset_class: etf,    sector: broad }
+    - { symbol: AAPL, asset_class: equity, sector: technology }
+    - { symbol: NVDA, asset_class: equity, sector: technology }
+    - { symbol: MU,   asset_class: equity, sector: technology }
+    - { symbol: TSLA, asset_class: equity, sector: consumer }
+
+labels:
+  horizon_bars: 7         # about one session
+  tp_sigma: 2.0
+  sl_sigma: 1.5
+
+cv:
+  n_folds: 4
+  embargo_bars: 14        # two sessions of purge around each test window
+  min_train_bars: 1600    # ~1 year of hourly bars
+  test_bars: 500          # ~3 months
+
+regime:
+  min_train_bars: 500
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 5.0       # wider than daily: you cross it far more often
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.3

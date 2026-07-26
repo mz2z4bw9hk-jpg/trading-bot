@@ -1,0 +1,55 @@
+# SWING TRADING — daily bars, holds measured in days to a couple of weeks.
+#
+#   titan validate --config configs/style-swing.yaml
+#
+# This is the timeframe the platform was designed and validated on, and the
+# one where its assumptions are least strained: a next-open fill is a fair
+# model of a market-on-open order, and a 4 bp round trip is small next to a
+# multi-day move. Start here.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1d
+  cache_dir: data_cache
+  bars: 2500              # ~10 years
+  min_history_bars: 1500
+  min_reliability: 0.85
+
+universe:
+  name: swing
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY,  asset_class: etf,    sector: broad }
+    - { symbol: QQQ,  asset_class: etf,    sector: broad }
+    - { symbol: AAPL, asset_class: equity, sector: technology }
+    - { symbol: MSFT, asset_class: equity, sector: technology }
+    - { symbol: NVDA, asset_class: equity, sector: technology }
+    - { symbol: MU,   asset_class: equity, sector: technology }
+    - { symbol: JPM,  asset_class: equity, sector: financials }
+    - { symbol: XOM,  asset_class: equity, sector: energy }
+
+labels:
+  horizon_bars: 10        # ~2 trading weeks
+  tp_sigma: 2.0
+  sl_sigma: 1.5
+
+cv:
+  n_folds: 5
+  embargo_bars: 10
+  min_train_bars: 756     # 3 years
+  test_bars: 252          # 1 year
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 3.0
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.10
+  risk_per_trade_pct: 0.4

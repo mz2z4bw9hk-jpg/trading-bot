@@ -28,6 +28,7 @@ import pandas as pd
 from titan.backtest.costs import CostModel
 from titan.core.config import LabelConfig, RiskConfig, SignalConfig
 from titan.core.log import get_logger
+from titan.core.timeframe import TRADING_DAYS_PER_YEAR as TRADING_DAYS
 from titan.core.types import Regime, Side, TradeGrade, VolState
 from titan.explain.evidence import LocalExplainer
 from titan.features.rolling import atr as compute_atr
@@ -51,12 +52,14 @@ class SignalGenerator:
         risk_cfg: RiskConfig,
         cost_model: CostModel,
         max_positions: int = 8,
+        periods_per_year: float = TRADING_DAYS,
     ) -> None:
         self._cfg = signal_cfg
         self._labels = label_cfg
         self._risk = risk_cfg
         self._costs = cost_model
         self._max_positions = max_positions
+        self._periods_per_year = periods_per_year
 
     # ------------------------------------------------------------------ #
 
@@ -148,7 +151,8 @@ class SignalGenerator:
         size = min(
             fractional_kelly(probability, a / b, self._risk.kelly_fraction,
                              self._risk.max_position_weight),
-            vol_target_size(sigma * np.sqrt(252.0), self._risk.target_annual_vol,
+            vol_target_size(sigma * np.sqrt(self._periods_per_year),
+                            self._risk.target_annual_vol,
                             self._max_positions, self._risk.max_position_weight),
             atr_risk_size(b, self._risk.risk_per_trade_pct, self._risk.max_position_weight),
         )

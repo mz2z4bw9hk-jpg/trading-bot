@@ -30,6 +30,7 @@ import pandas as pd
 from sklearn.mixture import GaussianMixture
 
 from titan.core.config import RegimeConfig
+from titan.core.timeframe import TRADING_DAYS_PER_YEAR as TRADING_DAYS
 from titan.core.types import Regime, VolState
 from titan.features.rolling import realized_vol, rolling_percentile_rank, rolling_slope_stats
 
@@ -56,9 +57,16 @@ BASE_STATES = ("bull", "range", "turbulent", "bear")
 class RegimeDetector:
     """GMM base states + sticky smoothing + rule refinement."""
 
-    def __init__(self, cfg: RegimeConfig, seed: int = 7) -> None:
+    def __init__(
+        self, cfg: RegimeConfig, seed: int = 7, periods_per_year: float = TRADING_DAYS
+    ) -> None:
         self._cfg = cfg
         self._seed = seed
+        # Both the annualization of the trend feature and the "past year"
+        # lookbacks below are stated in years, so they must be expressed in
+        # whatever bar this run uses.
+        self._periods_per_year = periods_per_year
+        self._year_bars = max(round(periods_per_year), 2)
         self._gmm: GaussianMixture | None = None
         self._mu: np.ndarray | None = None
         self._sd: np.ndarray | None = None
@@ -69,10 +77,12 @@ class RegimeDetector:
     def _state_features(self, bench: pd.DataFrame) -> pd.DataFrame:
         close = bench["close"]
         trend = np.log(close).diff(self._cfg.trend_window)
-        vol = realized_vol(close, self._cfg.vol_window)
+        vol = realized_vol(close, self._cfg.vol_window, annualize=self._periods_per_year)
         # Rolling (not all-time) drawdown: an old crash must not keep tainting
         # the state estimate a year later.
-        dd = close / close.rolling(252, min_periods=63).max() - 1.0
+        dd = close / close.rolling(
+            self._year_bars, min_periods=max(self._year_bars // 4, 2)
+        ).max() - 1.0
         slope_t = rolling_slope_stats(np.log(close), self._cfg.trend_window)[1]
         return pd.DataFrame({"trend": trend, "vol": vol, "dd": dd, "slope_t": slope_t})
 
@@ -110,7 +120,7 @@ class RegimeDetector:
         """
         assert self._mu is not None and self._sd is not None
         raw_means = gmm.means_ * self._sd + self._mu  # (trend_63, ann_vol)
-        ann_factor = 252.0 / self._cfg.trend_window
+        ann_factor = self._periods_per_year / self._cfg.trend_window
         median_vol = float(self._mu[1])
         mapping: dict[int, str] = {}
         for comp in range(raw_means.shape[0]):
@@ -152,7 +162,7 @@ class RegimeDetector:
         smoothed = base_post.ewm(halflife=self._cfg.smoothing_halflife, adjust=False).mean()
         smoothed = smoothed.div(smoothed.sum(axis=1), axis=0)
 
-        vol_pct = rolling_percentile_rank(feats["vol"], 252).reindex(feats.index)
+        vol_pct = rolling_percentile_rank(feats["vol"], self._year_bars).reindex(feats.index)
         dd = feats["dd"]
         slope_t = feats["slope_t"]
 

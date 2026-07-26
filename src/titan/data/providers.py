@@ -18,6 +18,11 @@ import pandas as pd
 
 from titan.core.config import DataConfig, UniverseConfig
 from titan.core.log import get_logger
+from titan.core.timeframe import (
+    YAHOO_INTERVALS,
+    YAHOO_MAX_HISTORY_DAYS,
+    session_bars_per_day,
+)
 from titan.data.schema import SchemaError
 from titan.data.synthetic import SyntheticMarket, SyntheticResult
 
@@ -165,18 +170,47 @@ class YahooProvider:
 
     name = "yahoo"
 
-    def __init__(self) -> None:
+    def __init__(self, timeframe: str = "1d") -> None:
         try:
             import yfinance  # noqa: F401
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise ImportError("YahooProvider requires: pip install 'titan[data]'") from exc
+        if timeframe not in YAHOO_INTERVALS:
+            raise ValueError(
+                f"Yahoo has no native {timeframe} bar; supported: "
+                f"{', '.join(sorted(YAHOO_INTERVALS))}. Resample from a finer "
+                "interval into CSV files and use the csv provider instead."
+            )
+        self._timeframe = timeframe
+        self._interval = YAHOO_INTERVALS[timeframe]
+
+    def _period_days(self, bars: int) -> int:
+        """Calendar days to request, clamped to Yahoo's cap for this interval.
+
+        The cap matters more than it looks: Yahoo does not error when you ask
+        for more intraday history than it keeps, it just returns less. Without
+        the clamp an hourly run asks for ten years, silently receives two
+        months, and reports walk-forward statistics computed over a single
+        market regime as though they spanned a decade.
+        """
+        wanted = int(bars / session_bars_per_day(self._timeframe) * 1.6) + 30
+        cap = YAHOO_MAX_HISTORY_DAYS[self._timeframe]
+        if cap and wanted > cap:
+            logger.warning(
+                "Yahoo keeps at most %d days of %s bars; requesting %d instead of %d. "
+                "Expect fewer bars than data.bars and check the QC report.",
+                cap, self._timeframe, cap, wanted,
+            )
+            return cap
+        return wanted
 
     def fetch(self, symbol: str, bars: int) -> pd.DataFrame:  # pragma: no cover
         import yfinance as yf
 
         # Fetch generously, then trim: calendars differ across assets.
-        period_days = int(bars * 1.6) + 30
-        df = yf.Ticker(symbol).history(period=f"{period_days}d", auto_adjust=True)
+        df = yf.Ticker(symbol).history(
+            period=f"{self._period_days(bars)}d", interval=self._interval, auto_adjust=True
+        )
         if df is None or len(df) == 0:
             raise RuntimeError(f"Yahoo returned no data for {symbol}")
         return df.tail(bars)
@@ -198,5 +232,5 @@ def build_provider(data_cfg: DataConfig, universe_cfg: UniverseConfig, seed: int
             raise ValueError("data.csv_dir must be set for the csv provider")
         return CSVProvider(data_cfg.csv_dir)
     if data_cfg.provider == "yahoo":
-        return YahooProvider()
+        return YahooProvider(data_cfg.timeframe)
     raise ValueError(f"unknown provider: {data_cfg.provider}")

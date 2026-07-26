@@ -15,6 +15,7 @@ import pandas as pd
 
 from titan.backtest.monte_carlo import stationary_block_bootstrap
 from titan.core.log import get_logger
+from titan.core.timeframe import TRADING_DAYS_PER_YEAR
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,7 @@ def compare_returns(
     n_sims: int = 2000,
     avg_block: float = 10.0,
     seed: int = 7,
+    periods_per_year: float = TRADING_DAYS_PER_YEAR,
 ) -> dict:
     """Paired bootstrap of the challenger-minus-production return spread.
 
@@ -47,7 +49,9 @@ def compare_returns(
     p_value = float((null_means >= observed).mean())
 
     def _sharpe(x: pd.Series) -> float:
-        return float(x.mean() / x.std() * np.sqrt(252.0)) if x.std() > 0 else 0.0
+        return (
+            float(x.mean() / x.std() * np.sqrt(periods_per_year)) if x.std() > 0 else 0.0
+        )
 
     return {
         "n_obs": len(joined),

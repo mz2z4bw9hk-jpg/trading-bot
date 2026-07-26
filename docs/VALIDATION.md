@@ -70,6 +70,31 @@ this order:
   probability interval widens and marginal signals are refused instead of
   flattered.
 
+## 2b. Timeframe-specific gates
+
+`data.timeframe` changes which of the platform's assumptions are load-bearing.
+Below daily, check these before reading any statistic:
+
+1. **Regime coverage, not bar count.** Vendor intraday history is short (Yahoo:
+   730 days at `1h`, 60 at `5m`). Four thousand bars spanning two years
+   satisfies every fold-geometry minimum while covering one or two regimes.
+   Read `regime_breakdown` first: a walk-forward that never saw a bear market
+   has not been tested against one, whatever its `n_bars` says.
+2. **Cost sensitivity is the binding sweep.** §3's 2x/4x cost sweep is a
+   nice-to-have at `1wk` and the decisive test at `1h` and below, where the
+   same calendar exposure crosses the spread 6.5x (hourly) to 78x (5-minute)
+   more often. A sub-daily strategy that dies at 2x costs was never alpha.
+3. **Fill realism.** The engine fills at the next bar's open. Satisfy yourself
+   that this models an order you could actually place at your bar size. It
+   does for daily and weekly. It does not for one-minute.
+4. **Annualization sanity.** Confirm the logged `bar clock:` line matches the
+   market you think you are trading, and that no `calendar mismatch` warning
+   fired. Every annualized figure — and every vol-targeted position size —
+   scales with that constant.
+
+`1m`/`5m` results are exploratory by construction (see USER_GUIDE §6b) and
+must not be promoted to production regardless of how they read.
+
 ## 3. Sensitivity analysis (manual, before production)
 
 Sweep and re-run `titan validate`, expecting graceful degradation — cliffs

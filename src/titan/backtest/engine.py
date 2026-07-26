@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from titan.backtest.costs import CostModel
-from titan.backtest.metrics import PerfSummary, summarize
+from titan.backtest.metrics import TRADING_DAYS, PerfSummary, summarize
 from titan.core.config import BacktestConfig
 from titan.core.log import get_logger
 from titan.core.types import Side, Universe
@@ -146,11 +146,13 @@ class BacktestEngine:
         cost_model: CostModel | None = None,
         universe: Universe | None = None,
         risk_approver: RiskApprover | None = None,
+        periods_per_year: float = TRADING_DAYS,
     ) -> None:
         self._cfg = cfg
         self._costs = cost_model or CostModel(cfg.costs)
         self._universe = universe
         self._risk = risk_approver
+        self._periods_per_year = periods_per_year
 
     # ------------------------------------------------------------------ #
 
@@ -377,7 +379,9 @@ class BacktestEngine:
             trades=trades,
             n_submitted=n_submitted,
             n_rejected=n_rejected,
-            summary=summarize(equity, trades, exposure),
+            summary=summarize(
+                equity, trades, exposure, periods_per_year=self._periods_per_year
+            ),
         )
         logger.info(
             "backtest: %d plans -> %d trades (%d rejected) | sharpe %.2f | maxDD %.1f%%",

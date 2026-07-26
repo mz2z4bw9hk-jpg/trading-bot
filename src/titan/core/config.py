@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from titan.core.timeframe import (
+    UNVALIDATED_TIMEFRAMES,
+    BarClock,
+    Timeframe,
+    resolve_bars_per_year,
+)
 
 
 class RunConfig(BaseModel):
@@ -31,6 +38,29 @@ class DataConfig(BaseModel):
     min_reliability: float = Field(0.70, ge=0.0, le=1.0)
     max_forward_fill: int = 2
     csv_dir: Path | None = None
+    # What one bar means in wall-clock time. Everything annualized derives
+    # from this; it is part of the research fingerprint, so a model trained on
+    # 1h bars will refuse to scan a 1d config.
+    timeframe: Timeframe = "1d"
+    # Bars per year. None resolves from the timeframe and universe composition
+    # (a 24/7 crypto book annualizes differently from a 6.5h equity session).
+    bars_per_year: float | None = Field(None, gt=0)
+    # Required to run 1m/5m research: those intervals break the platform's
+    # fill and cost assumptions rather than merely straining them.
+    acknowledge_unvalidated_timeframe: bool = False
+
+    @model_validator(mode="after")
+    def _check_timeframe(self) -> DataConfig:
+        if self.timeframe in UNVALIDATED_TIMEFRAMES and not self.acknowledge_unvalidated_timeframe:
+            raise ValueError(
+                f"timeframe {self.timeframe!r} is not validated research on this platform: "
+                "fills are modelled at the next bar's open (fiction at this frequency), "
+                "the cost model is calibrated for daily turnover (the spread would consume "
+                "the entire edge), and OHLCV bars omit the order-book state that drives "
+                "sub-minute price formation. Set data.acknowledge_unvalidated_timeframe: "
+                "true to run it anyway — the numbers are exploratory, not evidence."
+            )
+        return self
     # Synthetic provider only: innovation scale of the planted AR(1) drift.
     # None uses the generator default (realistically weak). Larger values are
     # for control experiments: the pipeline MUST detect strong planted signal.
@@ -208,6 +238,26 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+def bar_clock(cfg: TitanConfig) -> BarClock:
+    """Resolve the bar interval and its annualization constant.
+
+    A universe whose tradeable instruments are all crypto is annualized on a
+    24/7 calendar; anything with an equity, ETF or futures leg uses the
+    session calendar. The benchmark is excluded from that test — crypto books
+    are routinely benchmarked against SPY, and that alone should not flip the
+    convention for the whole run.
+    """
+    tradeable = [i for i in cfg.universe.instruments if i.symbol != cfg.universe.benchmark]
+    continuous = bool(tradeable) and all(i.asset_class == "crypto" for i in tradeable)
+    return BarClock(
+        timeframe=cfg.data.timeframe,
+        bars_per_year=resolve_bars_per_year(
+            cfg.data.timeframe, continuous=continuous, override=cfg.data.bars_per_year
+        ),
+        continuous=continuous,
+    )
 
 
 def research_fingerprint(cfg: TitanConfig) -> str:

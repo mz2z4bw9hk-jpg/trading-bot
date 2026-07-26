@@ -1,0 +1,59 @@
+# POSITION / LONG-TERM — weekly bars, holds measured in months.
+#
+#   titan validate --config configs/style-longterm.yaml
+#
+# Costs are irrelevant at this frequency and the signal-to-noise ratio per bar
+# is the best of any timeframe. The binding constraint is the opposite one:
+# weekly bars accumulate slowly, so ten years is only ~520 bars. The fold
+# geometry below is sized for that — five folds of 52 weeks on a 156-week
+# minimum train window. Fetch as much history as the vendor will give you.
+
+run:
+  seed: 7
+  artifacts_dir: artifacts
+  log_level: INFO
+
+data:
+  provider: yahoo
+  timeframe: 1wk
+  cache_dir: data_cache
+  bars: 1500              # ~29 years where available
+  min_history_bars: 400   # ~8 years of weekly bars
+  min_reliability: 0.85
+
+universe:
+  name: longterm
+  benchmark: SPY
+  instruments:
+    - { symbol: SPY,  asset_class: etf,    sector: broad }
+    - { symbol: QQQ,  asset_class: etf,    sector: broad }
+    - { symbol: IWM,  asset_class: etf,    sector: broad }
+    - { symbol: AAPL, asset_class: equity, sector: technology }
+    - { symbol: MSFT, asset_class: equity, sector: technology }
+    - { symbol: JNJ,  asset_class: equity, sector: healthcare }
+    - { symbol: JPM,  asset_class: equity, sector: financials }
+    - { symbol: XOM,  asset_class: equity, sector: energy }
+
+labels:
+  horizon_bars: 8         # ~2 months
+  tp_sigma: 2.0
+  sl_sigma: 1.5
+
+cv:
+  n_folds: 5
+  embargo_bars: 4
+  min_train_bars: 156     # 3 years of weekly bars
+  test_bars: 52           # 1 year
+
+regime:
+  min_train_bars: 104
+
+backtest:
+  costs:
+    commission_bps: 1.0
+    spread_bps: 3.0
+    impact_coefficient: 0.10
+
+risk:
+  target_annual_vol: 0.12
+  risk_per_trade_pct: 0.5

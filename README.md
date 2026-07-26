@@ -139,6 +139,28 @@ titan validate --config configs/live.yaml
 Then follow `docs/VALIDATION.md` — especially the promotion gate and the
 deflated-Sharpe reading — before acting on anything.
 
+### Timeframes
+
+`data.timeframe` accepts `1wk`/`1d`/`4h`/`1h`/`30m`/`15m`/`5m`/`1m`, and
+ready-made configs cover the four usual styles:
+
+```bash
+titan validate --config configs/style-longterm.yaml    # 1wk, holds of months
+titan validate --config configs/style-swing.yaml       # 1d,  days to weeks
+titan validate --config configs/style-daytrading.yaml  # 1h,  hours to days
+titan validate --config configs/style-scalping.yaml    # 5m,  exploratory only
+```
+
+Bars-per-year is resolved from the timeframe and the universe's calendar
+(24/7 for an all-crypto book, 6.5-hour session otherwise) and drives every
+annualized figure plus vol-target sizing; it is part of the research
+fingerprint, so a model validated on `1h` refuses to scan a `1d` config.
+
+`1m`/`5m` are **refused** unless the config explicitly acknowledges them:
+next-open fills are fiction at that frequency, the cost model is calibrated
+for daily turnover, and OHLCV bars omit the order-book state that actually
+moves sub-minute prices. See `docs/USER_GUIDE.md` §6b.
+
 ## Repository map
 
 ```
