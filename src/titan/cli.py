@@ -14,6 +14,8 @@ Commands
 - ``titan track``     paper-tracking: ``resolve`` grades logged scan
   predictions against what the market actually did (scans log themselves);
   ``status`` prints live calibration + the CUSUM decay alarm.
+- ``titan preflight`` QC a universe without running research: which symbols
+  would survive and why not. Minutes instead of the hours a large run costs.
 - ``titan info``      show config, registry, tracking and artifact status.
 """
 
@@ -342,6 +344,67 @@ def cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """QC a universe without running research: which symbols survive, and why not."""
+    from titan.data.store import MarketDataStore
+
+    cfg = _load_cfg(args)
+    clock = bar_clock(cfg)
+    logger.info(
+        "preflight: %d instruments, provider=%s, %s bars%s",
+        len(cfg.universe.instruments), cfg.data.provider, cfg.data.timeframe,
+        f" resampled from {cfg.data.resample_from}" if cfg.data.resample_from else "",
+    )
+    results = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).preflight()
+
+    passing, failing = [], []
+    for symbol, result in sorted(results.items()):
+        if isinstance(result, str):
+            failing.append((symbol, 0, 0.0, result))
+        elif result.reliability < cfg.data.min_reliability:
+            failing.append(
+                (symbol, result.n_bars, result.reliability, "; ".join(result.issues[:2]))
+            )
+        else:
+            passing.append((symbol, result.n_bars, result.reliability))
+
+    print(f"\n{'SYMBOL':12s} {'BARS':>7s} {'RELIAB':>7s}  STATUS")
+    for symbol, bars, rel in passing:
+        print(f"{symbol:12s} {bars:7d} {rel:7.3f}  ok")
+    for symbol, bars, rel, why in failing:
+        print(f"{symbol:12s} {bars:7d} {rel:7.3f}  EXCLUDED: {why[:70]}")
+
+    fold_bars = cfg.cv.min_train_bars + cfg.cv.n_folds * cfg.cv.test_bars
+    shortest = min((b for _, b, _ in passing), default=0)
+    longest = max((b for _, b, _ in passing), default=0)
+    print(
+        f"\n{len(passing)}/{len(results)} symbols pass QC at floor "
+        f"{cfg.data.min_reliability:.2f} | bars {shortest}-{longest} | "
+        f"{cfg.cv.n_folds} folds need {fold_bars} | clock {clock.timeframe} "
+        f"{clock.bars_per_year:.0f}/yr"
+    )
+    if not passing:
+        print("NOTHING would run. Fix the universe or the interval before validating.")
+        return 2
+    if longest < fold_bars:
+        print(
+            f"WARNING: longest series has {longest} bars but {cfg.cv.n_folds} folds need "
+            f"{fold_bars} — the run will quietly use fewer folds."
+        )
+    if failing:
+        print("\nUniverse with the failures removed:\n")
+        print("  instruments:")
+        by_symbol = {i.symbol: i for i in cfg.universe.instruments}
+        for symbol, _, _ in passing:
+            item = by_symbol.get(symbol)
+            if item is not None:
+                print(
+                    f"    - {{ symbol: {item.symbol}, asset_class: {item.asset_class}, "
+                    f"sector: {item.sector} }}"
+                )
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     from titan.models.registry import ModelRegistry
     from titan.monitor.paper import PaperTrackingStore
@@ -423,6 +486,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="resolve even if the production model was validated under a different config",
     )
     p_track.set_defaults(func=cmd_track)
+
+    p_pre = sub.add_parser(
+        "preflight",
+        help="QC a universe without running research (minutes, not hours)",
+    )
+    p_pre.add_argument("--config", help="YAML config path")
+    p_pre.set_defaults(func=cmd_preflight)
 
     p_info = sub.add_parser("info", help="show platform status")
     p_info.add_argument("--config", help="YAML config path")

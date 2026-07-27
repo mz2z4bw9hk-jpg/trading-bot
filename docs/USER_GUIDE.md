@@ -118,6 +118,7 @@ How to read it:
 ## 5. Daily operation
 
 ```bash
+titan preflight --config <cfg>     # which symbols survive QC — run this FIRST
 titan scan --config <cfg>          # rank the universe; auto-logs predictions
 titan track resolve --config <cfg> # grade elapsed predictions on real bars
 titan info                         # registry, production, tracking status
@@ -154,8 +155,13 @@ API serves — a test enforces it.
    mega-cap stocks, ready to run) or copy `configs/live-example.yaml` and
    edit the universe/benchmark. Provider `yahoo` needs network egress;
    provider `csv` reads per-symbol OHLCV files from `data.csv_dir`.
-2. `titan validate --config configs/my-live.yaml`
-3. Check `artifacts/quality.json` — drop anything below ~0.9 reliability.
+2. `titan preflight --config configs/my-live.yaml` — **before** committing
+   compute. It fetches and QCs every symbol, prints bars and reliability per
+   ticker with the reason for each exclusion, and emits a cleaned `instruments:`
+   block to paste back. On a 200-symbol universe this is the difference between
+   finding a dead ticker in two minutes and finding it three hours in.
+3. `titan validate --config configs/my-live.yaml`
+4. Check `artifacts/quality.json` — drop anything below ~0.9 reliability.
 4. Follow `VALIDATION.md` §1 (reading order and rejection gates) and §3
    (cost / barrier / jackknife / seed sensitivity sweeps).
 5. Paper-track `titan scan` on a schedule for a meaningful period before

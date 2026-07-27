@@ -105,6 +105,10 @@ titan scan --config configs/control-strong-signal.yaml
 # grade logged predictions against realized barriers; live calibration + CUSUM
 titan track resolve --config configs/control-strong-signal.yaml
 
+# which symbols in a universe would survive QC, and why not (run before a big
+# validate: minutes instead of discovering a dead ticker hours in)
+titan preflight --config configs/top100.yaml
+
 # platform / registry / paper-tracking status
 titan info
 

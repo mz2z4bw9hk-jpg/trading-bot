@@ -144,6 +144,35 @@ class MarketDataStore:
         )
         return out
 
+    def preflight(self, use_cache: bool = True) -> dict[str, DataQualityReport | str]:
+        """QC every symbol without building a dataset or raising.
+
+        A full run on a large universe costs hours and dies on the first
+        universe-level problem it meets. This answers "which symbols will
+        survive, and why not" in the time of a fetch, so the universe can be
+        fixed before the compute is spent. Values are a quality report, or a
+        string when the symbol could not be loaded at all.
+        """
+        out: dict[str, DataQualityReport | str] = {}
+        for symbol in [
+            *(i.symbol for i in self._universe_cfg.instruments),
+            self._universe_cfg.benchmark,
+        ]:
+            if symbol in out:
+                continue
+            try:
+                frame = self._load_one(symbol, use_cache)
+            except Exception as exc:  # a dead symbol must not end the sweep
+                out[symbol] = f"{type(exc).__name__}: {exc}"
+                continue
+            out[symbol] = assess_quality(
+                symbol,
+                frame,
+                min_bars=self._cfg.min_history_bars,
+                intraday_sessions=self._intraday_sessions,
+            )
+        return out
+
     # ------------------------------------------------------------------ #
 
     def load(self, use_cache: bool = True) -> MarketDataset:

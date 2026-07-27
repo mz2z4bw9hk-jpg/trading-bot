@@ -255,35 +255,50 @@ def test_yahoo_does_not_clamp_daily_requests(caplog):
 
 # ------------------------------------------------- shipped style configs --
 
-STYLE_CONFIGS = sorted(pathlib.Path("configs").glob("style-*.yaml"))
+ALL_CONFIGS = sorted(pathlib.Path("configs").glob("*.yaml"))
 
 # The validated daily config pairs tp 2.0 / sl 1.5 with a 10-bar horizon.
 _DAILY_TP_REACH = 2.0 / np.sqrt(10)
 _DAILY_SL_REACH = 1.5 / np.sqrt(10)
 
 
-def test_style_configs_exist():
-    assert STYLE_CONFIGS, "expected shipped style-*.yaml configs"
+def test_shipped_configs_exist():
+    assert ALL_CONFIGS, "expected shipped configs"
 
 
-@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
-def test_style_config_loads_and_resolves_a_clock(path):
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: p.stem)
+def test_config_loads_and_resolves_a_clock(path):
     assert bar_clock(load_config(path)).bars_per_year > 0
 
 
-@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
-def test_style_config_fold_geometry_fits_its_history_floor(path):
-    """A config whose folds need more bars than QC guarantees cannot run."""
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: p.stem)
+def test_config_fetches_enough_bars_for_every_fold_it_asks_for(path):
+    """Folds are cut on the panel's unique dates, so data.bars is what gates them.
+
+    PurgedWalkForward silently reduces n_folds when history is short
+    (`n_folds = min(cfg.n_folds, usable // test_bars)`), so a config that asks
+    for five folds and gets two produces a quieter, weaker result rather than
+    an error. min_history_bars is a per-symbol QC floor and does NOT gate this:
+    a short symbol just contributes fewer rows to a panel whose date span is
+    set by the longest series.
+    """
     cfg = load_config(path)
     needed = cfg.cv.min_train_bars + cfg.cv.n_folds * cfg.cv.test_bars
-    assert needed <= cfg.data.min_history_bars, (
-        f"{path.name}: folds need {needed} bars but min_history_bars is "
-        f"{cfg.data.min_history_bars}"
+    assert cfg.data.bars >= needed, (
+        f"{path.name}: {cfg.cv.n_folds} folds need {needed} bars but data.bars "
+        f"is {cfg.data.bars}; the run would quietly use fewer folds"
     )
 
 
-@pytest.mark.parametrize("path", STYLE_CONFIGS, ids=lambda p: p.stem)
-def test_style_config_barriers_stay_reachable_within_the_horizon(path):
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: p.stem)
+def test_config_can_form_at_least_one_fold(path):
+    """The hard floor: below this the splitter raises outright."""
+    cfg = load_config(path)
+    assert cfg.data.bars >= cfg.cv.min_train_bars + cfg.cv.test_bars
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: p.stem)
+def test_config_barriers_stay_reachable_within_the_horizon(path):
     """Barriers are per-bar sigma and are NOT horizon-scaled.
 
     Only sqrt(horizon) sigmas of cumulative move are available, so carrying

@@ -182,3 +182,61 @@ def _store(timeframe: str, asset_class: str) -> MarketDataStore:
 )
 def test_store_resolves_the_session_flag(timeframe, asset_class, expected):
     assert _store(timeframe, asset_class)._intraday_sessions is expected
+
+
+# ------------------------------------------------------------- preflight --
+
+
+def test_preflight_reports_every_symbol_without_building_a_dataset():
+    """A large universe costs hours; preflight answers 'who survives' in a fetch."""
+    data = DataConfig(provider="synthetic", bars=900, min_history_bars=100)
+    universe = UniverseConfig(
+        name="t",
+        benchmark="INDEX",
+        instruments=[
+            {"symbol": "AAA", "asset_class": "equity", "sector": "s"},
+            {"symbol": "BBB", "asset_class": "equity", "sector": "s"},
+        ],
+    )
+
+    results = MarketDataStore(data, universe, seed=7).preflight()
+
+    assert set(results) == {"AAA", "BBB", "INDEX"}  # benchmark included
+    assert all(not isinstance(r, str) for r in results.values())
+    assert all(r.reliability > 0 for r in results.values())
+
+
+class _OneDeadTicker:
+    """Provider that fails for one symbol, the way a delisted ticker does."""
+
+    name = "stub"
+
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self._frame = frame
+
+    def fetch(self, symbol: str, bars: int) -> pd.DataFrame:
+        if symbol == "DELISTED":
+            raise RuntimeError("Yahoo returned no data for DELISTED")
+        return self._frame.tail(bars)
+
+
+def test_preflight_records_a_dead_symbol_instead_of_raising():
+    """One bad ticker in a hundred must not end the sweep."""
+    data = DataConfig(provider="synthetic", bars=900, min_history_bars=100)
+    universe = UniverseConfig(
+        name="t",
+        benchmark="GOOD",
+        instruments=[
+            {"symbol": "GOOD", "asset_class": "equity", "sector": "s"},
+            {"symbol": "DELISTED", "asset_class": "equity", "sector": "s"},
+        ],
+    )
+    store = MarketDataStore(
+        data, universe, seed=7, provider=_OneDeadTicker(_daily_frame())
+    )
+
+    results = store.preflight(use_cache=False)
+
+    assert isinstance(results["DELISTED"], str)
+    assert "no data" in results["DELISTED"]
+    assert not isinstance(results["GOOD"], str)  # the sweep continued
