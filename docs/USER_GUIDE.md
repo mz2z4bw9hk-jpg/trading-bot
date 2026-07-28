@@ -62,6 +62,13 @@ test suite: on shuffled labels the model scores AUC ≈ 0.5.)
 
 Top to bottom:
 
+- **Orders to place** — the actionable output, first on the page. One row per
+  signal that cleared the whole gate chain, laid out as an order ticket: side,
+  limit and market entry, entry zone, stop, three targets, size as a fraction
+  of equity, risk-%, R:R, calibrated probability and grade. Prices are shown to
+  significant figures rather than two decimals, so a sub-penny token's entry,
+  stop and targets stay distinguishable. An empty table is a decision — every
+  candidate was refused, with the reason in the scanner table below.
 - **KPI row** — all out-of-sample, net of costs. `Hit rate @ gate` vs
   `Base rate` is the most important pair: the whole premise is that the
   gated tail beats the base rate.
@@ -72,7 +79,11 @@ Top to bottom:
   the trial count matching how many configs you tried. Then risk of ruin.
 - **Signal feed** — the actionable output (see §4).
 - **Scanner ranking** — every instrument, including *why* the rejected ones
-  were rejected. A scanner that only shows winners teaches you nothing.
+  were rejected. A scanner that only shows winners teaches you nothing. Each
+  instrument is ranked on its OWN most recent bar, so a mixed equity/crypto
+  book does not lose its equities on days when only crypto printed; anything
+  lagging beyond `scanner.max_staleness_bars` is listed as stale with its date
+  rather than dropped.
 - **Fold diagnostics** — each fold trained only on its past. One heroic
   fold among dead ones = regime luck, not edge.
 - **Feature importance** — permutation, out-of-sample. ≤ 0 means unused.
@@ -120,6 +131,7 @@ How to read it:
 ```bash
 titan preflight --config <cfg>     # which symbols survive QC — run this FIRST
 titan scan --config <cfg>          # rank the universe; auto-logs predictions
+titan scan --config <cfg> --model v007   # ...with a specific registry version
 titan track resolve --config <cfg> # grade elapsed predictions on real bars
 titan info                         # registry, production, tracking status
 titan dashboard --port 8321        # always reads the latest artifacts

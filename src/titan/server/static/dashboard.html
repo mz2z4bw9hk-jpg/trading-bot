@@ -103,6 +103,16 @@
   td { padding: 5px 8px 5px 0; border-top: 1px solid var(--grid); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .scroll-x { overflow-x: auto; }
+  #orders-table td.px { font-variant-numeric: tabular-nums; }
+  .side { font-weight: 700; letter-spacing: .04em; font-size: 11px;
+          padding: 2px 7px; border-radius: 4px; }
+  .side.buy  { background: color-mix(in srgb, var(--series-1) 22%, transparent);
+               color: var(--series-1); }
+  .side.sell { background: color-mix(in srgb, var(--critical) 22%, transparent);
+               color: var(--critical); }
+  .stop { color: var(--critical); }
+  .tgt  { color: var(--series-1); }
+  #orders-card .empty { padding: 14px 0; }
   /* chips */
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
           font-weight: 600; border: 1px solid var(--border); }
@@ -141,6 +151,18 @@
 <div class="disclaimer" id="disclaimer">Research output only — not investment advice.</div>
 
 <div class="grid">
+  <section class="card" id="orders-card">
+    <h2>Orders to place</h2>
+    <div id="orders-meta" class="note"></div>
+    <div class="scroll-x"><table id="orders-table"></table></div>
+    <div id="orders-empty"></div>
+    <div class="note">Every order below already cleared the full gate chain: calibrated
+      probability above the cost-derived threshold, the Venn-ABERS lower bound above it
+      too, positive expected value after commission/spread/impact, ensemble disagreement
+      under the ceiling, and a positive size from the risk engine. Sizes are fractions of
+      account equity. Not investment advice.</div>
+  </section>
+
   <section class="card"><h2>Out-of-sample performance</h2><div class="kpis" id="kpis"><div class="empty">loading…</div></div></section>
 
   <section class="card c8">
@@ -401,7 +423,14 @@ function regimeStrip(el, legendEl, dates, regimes) {
 
 /* ---------- correlation heatmap ---------- */
 function heatmap(el, symbols, matrix) {
-  const n = symbols.length, cell = Math.min(44, Math.floor(560/n)), L=64, T=26;
+  const n = symbols.length, cell = Math.min(44, Math.max(3, Math.floor(560/n)));
+  // Margins follow the longest ticker: "CRYPTO100-USD" clipped to "O100-USD"
+  // at a fixed 64px gutter. Column labels are rotated when cells are narrow
+  // (see below), so they need the same allowance above the grid.
+  const longest = symbols.reduce((m,s) => Math.max(m, String(s).length), 0);
+  const CH = 7.2;  // measured width of the 11px tick face, with slack
+  const L = Math.min(132, Math.max(44, 10 + longest * CH));
+  const T = cell < 34 ? Math.min(132, 18 + longest * CH) : 26;
   const W = L + n*cell + 10, H = T + n*cell + 10;
   el.innerHTML = "";
   const svg = svgEl("svg", {viewBox:`0 0 ${W} ${H}`});
@@ -412,8 +441,21 @@ function heatmap(el, symbols, matrix) {
   };
   const colorOf = v => v >= 0 ? mix(mid.length===7?mid:"#f0efec", pos, Math.min(v,1))
                               : mix(mid.length===7?mid:"#f0efec", neg, Math.min(-v,1));
+  // A label every cell is illegible once the cell is smaller than the type.
+  // At 178 symbols the cell is 3px and 178 names collapse into a grey smear
+  // that hides the matrix underneath. Draw only as many as fit, and rotate the
+  // column labels when they would otherwise overlap sideways; every cell keeps
+  // its exact pair on hover regardless.
+  const LABEL_PX = 13;
+  const step = Math.max(1, Math.ceil(LABEL_PX / cell));
+  const rotate = cell < 34;
   symbols.forEach((s,j) => {
-    const t1 = svgEl("text", {x:L+j*cell+cell/2, y:T-8, "text-anchor":"middle", class:"ticktext"});
+    if (j % step) return;
+    const cx = L + j*cell + cell/2;
+    const t1 = svgEl("text", rotate
+      ? {x:cx, y:T-6, "text-anchor":"start", class:"ticktext",
+         transform:`rotate(-90 ${cx} ${T-6})`}
+      : {x:cx, y:T-8, "text-anchor":"middle", class:"ticktext"});
     t1.textContent = s; svg.appendChild(t1);
     const t2 = svgEl("text", {x:L-8, y:T+j*cell+cell/2+4, "text-anchor":"end", class:"ticktext"});
     t2.textContent = s; svg.appendChild(t2);
@@ -535,6 +577,55 @@ function render() {
         <div class="reason">${esc(s.reasoning)}</div>
       </div>`).join("");
     $("#signal-cards").innerHTML = cards || `<div class="empty">no signal cleared the adaptive gate on the last bar — that is the gate working, not a bug.</div>`;
+
+    /* ---- Orders to place -------------------------------------------------
+       The same signals as the feed above, laid out as order tickets: what to
+       send, at what price, with which protective levels. Prices carry enough
+       decimals for sub-dollar instruments, where 2dp would round a stop into
+       the entry. */
+    const orders = scan.signals || [];
+    // Significant figures, not fixed decimals: a sub-penny token's entry, stop
+    // and three targets all round to the same 0.000023 at 6dp, which is an
+    // order ticket you cannot act on.
+    const px = v => {
+      if (v == null || !isFinite(v)) return "—";
+      const a = Math.abs(v);
+      const d = a >= 100 ? 2 : a >= 1 ? 3
+              : a > 0 ? Math.min(10, Math.max(4, 5 - Math.floor(Math.log10(a)))) : 4;
+      return (+v).toFixed(d).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    };
+    $("#orders-meta").textContent =
+      `scan ${scan.date} · regime ${scan.regime.regime} · ${orders.length} order${
+        orders.length === 1 ? "" : "s"} · sizes are % of account equity`;
+    if (!orders.length) {
+      $("#orders-table").innerHTML = "";
+      $("#orders-empty").innerHTML =
+        `<div class="empty"><b>No orders.</b> Nothing cleared the gate on this bar —
+         every candidate was refused for a stated reason (see the scanner table
+         below). An empty list is a decision, not a missing feature.</div>`;
+    } else {
+      $("#orders-empty").innerHTML = "";
+      $("#orders-table").innerHTML = `
+        <tr><th>Symbol</th><th>Side</th><th class="num">Limit</th><th class="num">Market</th>
+            <th class="num">Entry zone</th><th class="num">Stop</th><th class="num">Targets (T1·T2·T3)</th>
+            <th class="num">Size</th><th class="num">Risk</th><th class="num">R:R</th>
+            <th class="num">P(hit)</th><th>Grade</th></tr>` +
+        orders.map(s => `<tr>
+          <td><b>${esc(s.symbol)}</b></td>
+          <td><span class="side ${s.side === "long" ? "buy" : "sell"}">${
+            s.side === "long" ? "BUY" : "SELL"}</span></td>
+          <td class="num px">${px(s.optimal_limit_entry)}</td>
+          <td class="num px">${px(s.market_entry)}</td>
+          <td class="num px">${px(s.entry_zone[0])}–${px(s.entry_zone[1])}</td>
+          <td class="num px stop">${px(s.stop_loss)}</td>
+          <td class="num px tgt">${s.take_profit_levels.map(px).join(" · ")}</td>
+          <td class="num">${fmtPct(s.position_size_fraction)}</td>
+          <td class="num">${s.risk_percentage.toFixed(2)}%</td>
+          <td class="num">${s.risk_reward.toFixed(2)}</td>
+          <td class="num">${fmtPct(s.probability)}</td>
+          <td><span class="chip ${gradeCls(s.trade_grade)}">${esc(s.trade_grade)}</span></td>
+        </tr>`).join("");
+    }
   }
   /* folds */
   if (report) {

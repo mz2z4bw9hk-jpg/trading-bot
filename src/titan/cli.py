@@ -222,16 +222,24 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     cfg = _load_cfg(args)
     registry = ModelRegistry(cfg.model.store_dir)
+    wanted = getattr(args, "model", None)
     try:
-        bundle, manifest = registry.load(None)
-    except LookupError:
-        print("no production model: run `titan validate` first", file=sys.stderr)
+        bundle, manifest = registry.load(wanted)
+    except LookupError as exc:
+        print(
+            f"model {wanted!r} not found in the registry: {exc}" if wanted
+            else "no production model: run `titan validate` first",
+            file=sys.stderr,
+        )
         return 2
     error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch)
     if error:
         print(error, file=sys.stderr)
         return 2
-    logger.info("scanning with production model %s", manifest.version)
+    logger.info(
+        "scanning with %s model %s",
+        "requested" if wanted else "production", manifest.version,
+    )
 
     dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
     panel = FeatureMatrixBuilder(cfg.features).build(dataset)
@@ -451,6 +459,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan = sub.add_parser("scan", help="scan the universe with the production model")
     p_scan.add_argument("--config", help="YAML config path (must match the validate run's config)")
     p_scan.add_argument("--out", help="artifacts output dir")
+    p_scan.add_argument(
+        "--model",
+        help=(
+            "registry version to scan with (default: the production model). "
+            "The config fingerprint is still enforced against whichever model "
+            "is chosen — use this to scan with a challenger that validate "
+            "produced but the promotion gate did not promote."
+        ),
+    )
     p_scan.add_argument(
         "--allow-config-mismatch", action="store_true",
         help="scan even if the production model was validated under a different config",
