@@ -213,6 +213,12 @@ class SignalConfig(BaseModel):
 
 class ScannerConfig(BaseModel):
     top_n: int = Field(10, ge=1)
+    # How many panel dates an instrument's own latest bar may lag the newest
+    # date in the panel before the scanner reports it as stale instead of
+    # ranking it. Mixed-calendar universes need headroom: crypto trades every
+    # day, so after a long weekend an equity's freshest bar is 3-4 panel dates
+    # old and is still perfectly current for that instrument.
+    max_staleness_bars: int = Field(5, ge=0)
 
 
 class MonitorConfig(BaseModel):

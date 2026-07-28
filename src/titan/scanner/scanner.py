@@ -103,11 +103,43 @@ class MarketScanner:
     # ------------------------------------------------------------------ #
 
     def scan(self, dataset: MarketDataset, panel: FeaturePanel) -> ScanResult:
-        """Rank every instrument on the panel's most recent date."""
-        last_date = panel.dates()[-1]
+        """Rank every instrument on ITS OWN most recent bar.
+
+        Scanning one global date silently drops every instrument that does not
+        trade on it. In a mixed equity/crypto universe the newest panel date is
+        routinely a crypto-only day — a weekend, or simply a fresher print —
+        and the entire equity book vanishes from the scan without a word. An
+        equity's Friday close is not stale on a Saturday; it is that
+        instrument's current state.
+
+        Instruments lagging further than ``scanner.max_staleness_bars`` panel
+        dates ARE reported as stale rather than ranked, so a delisted or halted
+        symbol cannot produce a signal from months-old prices.
+        """
+        dates = panel.dates()
+        last_date = dates[-1]
         snapshot = self._detector.snapshot(dataset.benchmark_frame.loc[:last_date])
 
-        X_last = panel.X.loc[last_date]
+        # Each symbol's own freshest row, and how far behind the panel it is.
+        symbols = panel.X.index.get_level_values(1)
+        own_date = panel.X.groupby(symbols, observed=True).apply(
+            lambda g: g.index.get_level_values(0).max()
+        )
+        date_rank = {d: i for i, d in enumerate(dates)}
+        lag = {sym: len(dates) - 1 - date_rank[d] for sym, d in own_date.items()}
+
+        fresh = [s for s in own_date.index if lag[s] <= self._cfg.scanner.max_staleness_bars]
+        stale = [s for s in own_date.index if lag[s] > self._cfg.scanner.max_staleness_bars]
+        if stale:
+            logger.info(
+                "scan: %d instrument(s) stale beyond %d bars and not ranked: %s",
+                len(stale), self._cfg.scanner.max_staleness_bars,
+                ", ".join(map(str, stale[:8])) + ("..." if len(stale) > 8 else ""),
+            )
+
+        X_last = pd.DataFrame(
+            [panel.X.loc[(own_date[s], s)] for s in fresh], index=pd.Index(fresh)
+        )
         X_sel = X_last.reindex(columns=self._selected)
         probs = self._ensemble.predict_proba(X_sel)[:, 1]
         uncs = self._ensemble.uncertainty(X_sel)
@@ -136,10 +168,10 @@ class MarketScanner:
             else:
                 signal = self._generator.generate(
                     symbol=str(sym),
-                    date=last_date,
+                    date=own_date[sym],
                     probability=p,
                     uncertainty=unc,
-                    frame=dataset.frames[str(sym)].loc[:last_date].tail(60),
+                    frame=dataset.frames[str(sym)].loc[: own_date[sym]].tail(60),
                     feature_row=X_sel.loc[sym],
                     regime=snapshot.regime,
                     vol_state=snapshot.vol_state,
@@ -159,6 +191,12 @@ class MarketScanner:
                     signals.append(signal)
             rows.append(row)
 
+        for sym in stale:
+            rows.append(ScanRow(
+                symbol=str(sym), probability=float("nan"), uncertainty=float("nan"),
+                status=f"stale: last bar {own_date[sym].date()} ({lag[sym]} bars behind)",
+            ))
+
         rows.sort(key=lambda r: (r.status != "signal", -r.confidence, -r.probability))
         for rank, row in enumerate(rows, start=1):
             row.rank = rank
@@ -168,7 +206,9 @@ class MarketScanner:
             date=last_date, regime=snapshot, rows=rows, signals=signals[:top_n]
         )
         logger.info(
-            "scan %s: %d instruments, %d actionable signals (regime=%s)",
-            last_date.date(), len(rows), len(signals), snapshot.regime.value,
+            "scan %s: %d instruments (%d ranked, %d stale), %d actionable signals "
+            "(regime=%s)",
+            last_date.date(), len(rows), len(fresh), len(stale), len(signals),
+            snapshot.regime.value,
         )
         return result
