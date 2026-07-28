@@ -240,3 +240,49 @@ def test_preflight_records_a_dead_symbol_instead_of_raising():
     assert isinstance(results["DELISTED"], str)
     assert "no data" in results["DELISTED"]
     assert not isinstance(results["GOOD"], str)  # the sweep continued
+
+
+# ------------------------------------------------- non-positive prices ----
+
+
+def _with_zero_prices(df: pd.DataFrame, frac: float) -> pd.DataFrame:
+    """Yahoo rounding a sub-penny quote (SHIB, BONK) to exactly zero."""
+    out = df.copy()
+    step = max(int(1 / frac), 2)
+    out.iloc[::step, out.columns.get_loc("close")] = 0.0
+    return out
+
+
+def test_a_zero_price_does_not_poison_the_outlier_statistic():
+    """log(0) is -inf, and one of them makes the robust sigma infinite.
+
+    The outlier fraction is then a description of infinities rather than a
+    measurement of the data. Non-positive prices have their own check, so
+    excluding them from the log leaves nothing hidden.
+    """
+    corrupted = _with_zero_prices(_daily_frame(), 0.001)
+
+    report = assess_quality("TEST", corrupted, min_bars=1500)
+
+    assert np.isfinite(report.checks["return_outliers"])
+    # The zeros are still reported, by the check that exists for them.
+    assert report.checks["positive_prices"] == 0.0
+    assert any("non-positive prices" in issue for issue in report.issues)
+
+
+def test_a_clean_series_is_unaffected_by_the_guard():
+    df = _daily_frame()
+    report = assess_quality("TEST", df, min_bars=1500)
+    assert report.checks["return_outliers"] == pytest.approx(1.0)
+
+
+def test_outlier_detection_still_fires_on_a_real_bad_print():
+    """The guard must not blind the check it protects."""
+    df = _daily_frame()
+    corrupt = df.copy()
+    corrupt.iloc[::200, corrupt.columns.get_loc("close")] *= 50  # decimal shift
+
+    report = assess_quality("TEST", corrupt, min_bars=1500)
+
+    assert report.checks["return_outliers"] < 1.0
+    assert any("robust sigmas" in issue for issue in report.issues)

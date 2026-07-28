@@ -114,7 +114,13 @@ def assess_quality(
         report.issues.append(f"{stale:.2%} stale closes")
 
     # -- extreme returns (data errors, not crashes: robust 15-MAD threshold) --
-    log_ret = np.log(df["close"]).diff().dropna()
+    # Non-positive closes are already scored above; they must not reach the log.
+    # A single zero price yields -inf, which propagates into the median absolute
+    # deviation and makes the robust sigma itself infinite — after which the
+    # outlier fraction is not a measurement of anything. Sub-penny tokens hit
+    # this routinely: Yahoo rounds a $0.00001 quote to exactly 0.
+    positive_close = df["close"].where(df["close"] > 0)
+    log_ret = np.log(positive_close).diff().replace([np.inf, -np.inf], np.nan).dropna()
     if intraday_sessions and len(log_ret) > 1:
         # Overnight and intra-session returns are different populations: a
         # gap-up open is not an error, it just dwarfs an hourly move. Score
