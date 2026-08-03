@@ -226,6 +226,10 @@ class MonitorConfig(BaseModel):
     psi_warn: float = Field(0.10, gt=0)
     min_live_samples: int = Field(50, ge=10)
     promotion_p_value: float = Field(0.05, gt=0, lt=0.5)
+    # Starting balance of the forward paper account replayed from the tracking
+    # log. Separate from backtest.initial_capital: that funds a historical
+    # simulation, this funds the live-forward one.
+    paper_starting_equity: float = Field(1_000_000.0, gt=0)
 
 
 class TitanConfig(BaseModel):

@@ -69,6 +69,14 @@ Top to bottom:
   significant figures rather than two decimals, so a sub-penny token's entry,
   stop and targets stay distinguishable. An empty table is a decision — every
   candidate was refused, with the reason in the scanner table below.
+- **Paper account** — the forward simulated account, starting at
+  `monitor.paper_starting_equity` (default $1,000,000). Equity, realized P&L,
+  drawdown, win rate and profit factor; the equity curve; open positions; and
+  the closed-trade ledger newest-first with entry, exit, why it closed, bars
+  held, notional, return, P&L and the equity it left behind. This is the live
+  loop's own track record, distinct from the backtest above it — the backtest
+  is history, this is what the scanner has actually emitted since you started
+  running it.
 - **KPI row** — all out-of-sample, net of costs. `Hit rate @ gate` vs
   `Base rate` is the most important pair: the whole premise is that the
   gated tail beats the base rate.
@@ -132,6 +140,7 @@ How to read it:
 titan preflight --config <cfg>     # which symbols survive QC — run this FIRST
 titan scan --config <cfg>          # rank the universe; auto-logs predictions
 titan scan --config <cfg> --model v007   # ...with a specific registry version
+titan account --config <cfg>       # paper account: equity, open book, ledger
 titan track resolve --config <cfg> # grade elapsed predictions on real bars
 titan info                         # registry, production, tracking status
 titan dashboard --port 8321        # always reads the latest artifacts
@@ -335,6 +344,28 @@ Paper-tracking is built into the daily loop — no code needed:
 3. `titan track status` (or the dashboard's *Paper tracking* panel) shows
    logged/resolved counts, hit rate, rolling Brier vs the production
    model's own OOF baseline, and the calibration table.
+
+### The paper account
+
+`scan` and `track resolve` both refresh `artifacts/account.json`, so the
+forward account keeps itself current on the daily loop with no third command:
+a scan opens positions, a resolve closes them.
+
+    titan account --config <cfg>
+
+It starts at `monitor.paper_starting_equity` ($1,000,000 by default) and takes
+each signal at the size the risk engine gave it, against the equity standing
+at that moment, netting the round-trip cost the signal itself priced in.
+Equity compounds as trades close.
+
+It is deliberately NOT a second risk engine. Sizes are taken as emitted; the
+only portfolio rule re-applied is `backtest.max_gross_exposure`, because an
+account that cannot fund a position does not take it and silently levering
+past 100% would make the curve fiction. Signals refused for that reason are
+counted and shown, not dropped.
+
+An empty ledger is the expected state until the gate emits something that has
+since resolved — it is not a broken panel.
 
 On a CUSUM alarm: run `validate` to produce a challenger; let the promotion
 gate decide. Never hand-promote.

@@ -16,6 +16,8 @@ Commands
   ``status`` prints live calibration + the CUSUM decay alarm.
 - ``titan preflight`` QC a universe without running research: which symbols
   would survive and why not. Minutes instead of the hours a large run costs.
+- ``titan account``   forward paper account replayed from the tracking log:
+  starting balance, equity, open positions and the closed-trade ledger.
 - ``titan info``      show config, registry, tracking and artifact status.
 """
 
@@ -209,6 +211,27 @@ def _write_tracking_artifact(cfg: TitanConfig, out_dir: Path, summary: dict) -> 
     (out_dir / "tracking.json").write_text(json.dumps(summary, indent=1, default=str))
 
 
+def _write_account_artifact(cfg: TitanConfig, out_dir: Path) -> dict:
+    """Refresh the forward paper account from the tracking log.
+
+    Derived state, not a separate ledger: it is recomputed from the log every
+    time the log moves, so `scan` (which opens positions) and `track resolve`
+    (which closes them) both keep it current without a third command to forget.
+    """
+    from titan.monitor.account import replay
+    from titan.monitor.paper import PaperTrackingStore
+
+    store = PaperTrackingStore(_paper_store_path(cfg))
+    state = replay(
+        store.records,
+        starting_equity=cfg.monitor.paper_starting_equity,
+        max_gross_exposure=cfg.backtest.max_gross_exposure,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "account.json").write_text(json.dumps(state, indent=1, default=str))
+    return state
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     from titan.artifacts import write_scan_artifacts
     from titan.backtest.costs import CostModel
@@ -267,9 +290,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     store = PaperTrackingStore(_paper_store_path(cfg))
     n_tracked = store.log_signals(scan.signals)
     _write_tracking_artifact(cfg, out, store.summary(_baseline_brier(cfg)))
+    account = _write_account_artifact(cfg, out)
 
     print(json.dumps({
         "date": str(scan.date.date()),
+        "account_equity": account["equity"],
+        "open_positions": account["n_open"],
         "regime": scan.regime.regime.value,
         "n_signals": len(scan.signals),
         "newly_tracked": n_tracked,
@@ -341,7 +367,15 @@ def cmd_track(args: argparse.Namespace) -> int:
     summary = store.summary(_baseline_brier(cfg))
     out_dir = Path(args.out or cfg.run.artifacts_dir)
     _write_tracking_artifact(cfg, out_dir, summary)
-    print(json.dumps({"newly_resolved": n_resolved, **summary}, indent=1, default=str))
+    account = _write_account_artifact(cfg, Path(args.out or cfg.run.artifacts_dir))
+    print(json.dumps({
+        "newly_resolved": n_resolved,
+        "account_equity": account["equity"],
+        "account_return": account["total_return"],
+        "closed_trades": account["n_closed"],
+        "open_positions": account["n_open"],
+        **summary,
+    }, indent=1, default=str))
     if summary.get("cusum_alarm"):
         print(
             "CUSUM ALARM: live calibration is degrading — run `titan validate` "
@@ -410,6 +444,51 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                     f"    - {{ symbol: {item.symbol}, asset_class: {item.asset_class}, "
                     f"sector: {item.sector} }}"
                 )
+    return 0
+
+
+def cmd_account(args: argparse.Namespace) -> int:
+    """Print the forward paper account: equity, open book, recent trades."""
+    cfg = _load_cfg(args)
+    state = _write_account_artifact(cfg, Path(args.out or cfg.run.artifacts_dir))
+
+    eq, start = state["equity"], state["starting_equity"]
+    print(f"\nPAPER ACCOUNT  (replayed from {_paper_store_path(cfg)})")
+    print(f"  starting equity   ${start:,.2f}")
+    print(f"  current equity    ${eq:,.2f}   ({state['total_return']:+.2%})")
+    print(f"  realized P&L      ${state['realized_pnl']:,.2f}")
+    print(f"  max drawdown      {state['max_drawdown']:.2%}")
+    print(f"  closed / open     {state['n_closed']} / {state['n_open']}"
+          f"   (open notional ${state['open_notional']:,.2f})")
+    if state["win_rate"] is not None:
+        print(f"  win rate          {state['win_rate']:.1%}"
+              f"   profit factor {state['profit_factor']}")
+    if state["n_skipped_exposure"]:
+        print(f"  skipped (gross exposure cap): {state['n_skipped_exposure']}")
+    if state["n_legacy_unsized"]:
+        print(f"  excluded (logged before account tracking): {state['n_legacy_unsized']}")
+
+    if state["open_positions"]:
+        print("\n  OPEN POSITIONS")
+        print(f"    {'SYMBOL':12s} {'SINCE':12s} {'ENTRY':>12s} {'NOTIONAL':>14s} {'STOP':>12s}")
+        for p_ in state["open_positions"]:
+            stop = "—" if p_["stop_loss"] is None else f"{p_['stop_loss']:.6g}"
+            print(f"    {p_['symbol']:12s} {p_['entry_date']:12s} "
+                  f"{p_['entry_price']:12.6g} {p_['notional']:14,.2f} {stop:>12s}")
+
+    trades = state["trades"][: args.limit]
+    if trades:
+        print(f"\n  LAST {len(trades)} CLOSED TRADE(S)")
+        print(f"    {'EXIT':12s} {'SYMBOL':12s} {'WHY':5s} {'RET':>8s} "
+              f"{'P&L':>14s} {'EQUITY':>15s}")
+        for t in trades:
+            print(f"    {t['exit_date']:12s} {t['symbol']:12s} {t['exit_reason']:5s} "
+                  f"{t['net_return']:+8.2%} {t['pnl']:+14,.2f} {t['equity_after']:15,.2f}")
+    else:
+        print("\n  No closed trades yet. The account moves when `titan scan` emits a")
+        print("  signal and `titan track resolve` grades it — an empty ledger means")
+        print("  the gate has refused everything so far, not that tracking is broken.")
+    print()
     return 0
 
 
@@ -510,6 +589,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pre.add_argument("--config", help="YAML config path")
     p_pre.set_defaults(func=cmd_preflight)
+
+    p_acct = sub.add_parser(
+        "account",
+        help="forward paper account: equity, open positions and closed trades",
+    )
+    p_acct.add_argument("--config", help="YAML config path")
+    p_acct.add_argument("--out", help="artifacts output dir")
+    p_acct.add_argument("--limit", type=int, default=20, help="closed trades to print")
+    p_acct.set_defaults(func=cmd_account)
 
     p_info = sub.add_parser("info", help="show platform status")
     p_info.add_argument("--config", help="YAML config path")

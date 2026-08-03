@@ -113,6 +113,11 @@
   .stop { color: var(--critical); }
   .tgt  { color: var(--series-1); }
   #orders-card .empty { padding: 14px 0; }
+  .sub-h { font-size: 11px; font-weight: 600; color: var(--ink-mut);
+           text-transform: uppercase; letter-spacing: .05em; margin: 14px 0 4px; }
+  .pnl-up { color: var(--good-text); } .pnl-dn { color: var(--critical); }
+  #account-kpis { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
+  #account-kpis .v { font-size: 19px; }
   /* chips */
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
           font-weight: 600; border: 1px solid var(--border); }
@@ -161,6 +166,17 @@
       too, positive expected value after commission/spread/impact, ensemble disagreement
       under the ceiling, and a positive size from the risk engine. Sizes are fractions of
       account equity. Not investment advice.</div>
+  </section>
+
+  <section class="card" id="account-card">
+    <h2>Paper account</h2>
+    <div class="kpis" id="account-kpis"></div>
+    <div class="chart" id="account-equity"></div>
+    <h3 class="sub-h">Open positions</h3>
+    <div class="scroll-x"><table id="account-open"></table></div>
+    <h3 class="sub-h">Closed trades — newest first</h3>
+    <div class="scroll-x"><table id="account-trades"></table></div>
+    <div class="note" id="account-note"></div>
   </section>
 
   <section class="card"><h2>Out-of-sample performance</h2><div class="kpis" id="kpis"><div class="empty">loading…</div></div></section>
@@ -475,14 +491,16 @@ function heatmap(el, symbols, matrix) {
 /* ---------- data + render ---------- */
 let DATA = {};
 async function loadAll() {
-  const [report, equity, regimes, scan, importance, universe, corr, manifest, quality, tracking] =
+  const [report, equity, regimes, scan, importance, universe, corr, manifest, quality,
+         tracking, account] =
     await Promise.all([
       getJSON("/api/report"), getJSON("/api/equity"), getJSON("/api/regimes"),
       getJSON("/api/scan"), getJSON("/api/importance"),
       getJSON("/api/universe"), getJSON("/api/correlation"), getJSON("/api/manifest"),
-      getJSON("/api/quality"), getJSON("/api/tracking"),
+      getJSON("/api/quality"), getJSON("/api/tracking"), getJSON("/api/account"),
     ]);
-  DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality, tracking};
+  DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality,
+          tracking, account};
   render();
 }
 
@@ -626,6 +644,79 @@ function render() {
           <td><span class="chip ${gradeCls(s.trade_grade)}">${esc(s.trade_grade)}</span></td>
         </tr>`).join("");
     }
+  }
+  /* paper account */
+  const acct = DATA.account;
+  if (acct) {
+    const usd = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined,
+      {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const k = (label, val, cls="") => `<div class="kpi"><div class="v ${cls}">${val}</div><div class="l">${label}</div></div>`;
+    const ret = acct.total_return;
+    $("#account-kpis").innerHTML =
+      k("Equity", usd(acct.equity), ret > 0 ? "up" : ret < 0 ? "down" : "") +
+      k("Started with", usd(acct.starting_equity)) +
+      k("Total return", fmtPct(ret, 2), ret > 0 ? "up" : ret < 0 ? "down" : "") +
+      k("Realized P&L", usd(acct.realized_pnl), acct.realized_pnl > 0 ? "up" : acct.realized_pnl < 0 ? "down" : "") +
+      k("Max drawdown", fmtPct(acct.max_drawdown, 2), acct.max_drawdown < 0 ? "down" : "") +
+      k("Closed trades", acct.n_closed) +
+      k("Open positions", acct.n_open) +
+      k("Win rate", acct.win_rate == null ? "—" : fmtPct(acct.win_rate)) +
+      k("Profit factor", acct.profit_factor == null ? "—" : fmtNum(acct.profit_factor));
+
+    const curve = acct.equity_curve || [];
+    if (curve.length > 1) {
+      lineChart($("#account-equity"), curve.map(p => p.date), curve.map(p => p.equity),
+        {color: cssVar("--series-1"), name: "account equity", height: 200,
+         label: "paper account equity",
+         fmt: v => Math.abs(v) >= 1e6 ? "$" + (v/1e6).toFixed(2) + "M"
+                 : Math.abs(v) >= 1e3 ? "$" + (v/1e3).toFixed(1) + "k"
+                 : usd(v)});
+    } else {
+      $("#account-equity").innerHTML = "";
+    }
+
+    const open = acct.open_positions || [];
+    $("#account-open").innerHTML = !open.length
+      ? `<tr><td class="t2">No open positions.</td></tr>`
+      : `<tr><th>Symbol</th><th>Side</th><th>Opened</th><th class="num">Entry</th>
+             <th class="num">Notional</th><th class="num">Stop</th></tr>` +
+        open.map(p => `<tr><td><b>${esc(p.symbol)}</b></td>
+          <td><span class="side ${p.side === "long" ? "buy" : "sell"}">${
+            p.side === "long" ? "BUY" : "SELL"}</span></td>
+          <td>${esc(p.entry_date)}</td>
+          <td class="num">${p.entry_price ? p.entry_price.toPrecision(6) : "—"}</td>
+          <td class="num">${usd(p.notional)}</td>
+          <td class="num stop">${p.stop_loss == null ? "—" : p.stop_loss.toPrecision(6)}</td>
+        </tr>`).join("");
+
+    const tr = acct.trades || [];
+    $("#account-trades").innerHTML = !tr.length
+      ? `<tr><td class="t2">No closed trades yet — the gate has not emitted a signal that has since resolved.</td></tr>`
+      : `<tr><th>Exit date</th><th>Symbol</th><th>Opened</th><th>Why</th>
+             <th class="num">Entry</th><th class="num">Exit</th><th class="num">Bars</th>
+             <th class="num">Notional</th><th class="num">Return</th>
+             <th class="num">P&L</th><th class="num">Equity after</th></tr>` +
+        tr.slice(0, 200).map(t => `<tr>
+          <td>${esc(t.exit_date)}</td><td><b>${esc(t.symbol)}</b></td>
+          <td class="t2">${esc(t.entry_date)}</td>
+          <td><span class="chip ${t.exit_reason === "tp" ? "a" : t.exit_reason === "sl" ? "rej" : "b"}">${esc(t.exit_reason)}</span></td>
+          <td class="num">${t.entry_price ? t.entry_price.toPrecision(6) : "—"}</td>
+          <td class="num">${t.exit_price ? t.exit_price.toPrecision(6) : "—"}</td>
+          <td class="num">${t.bars_held}</td>
+          <td class="num">${usd(t.notional)}</td>
+          <td class="num ${t.net_return >= 0 ? "pnl-up" : "pnl-dn"}">${fmtPct(t.net_return, 2)}</td>
+          <td class="num ${t.pnl >= 0 ? "pnl-up" : "pnl-dn"}">${usd(t.pnl)}</td>
+          <td class="num">${usd(t.equity_after)}</td>
+        </tr>`).join("");
+
+    const notes = [
+      "Signals are sized as the risk engine sized them when emitted; returns are net of the round-trip cost each signal priced in.",
+    ];
+    if (acct.n_skipped_exposure)
+      notes.push(`${acct.n_skipped_exposure} signal(s) not taken: the account could not fund them within its gross-exposure cap.`);
+    if (acct.n_legacy_unsized)
+      notes.push(`${acct.n_legacy_unsized} prediction(s) logged before account tracking existed carry no size and are excluded.`);
+    $("#account-note").textContent = notes.join(" ");
   }
   /* folds */
   if (report) {

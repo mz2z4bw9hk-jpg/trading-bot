@@ -22,7 +22,9 @@ dependencies = [
 [project.optional-dependencies]
 server = ["fastapi>=0.104", "uvicorn>=0.24"]
 data = ["yfinance>=0.2.40", "pyarrow>=14.0"]
-dev = ["pytest>=7.4", "ruff>=0.4", "mypy>=1.8", "types-PyYAML"]
+# httpx2 backs starlette's TestClient, which the dashboard API tests use;
+# newer starlette requires it by name rather than falling back to httpx.
+dev = ["pytest>=7.4", "ruff>=0.4", "mypy>=1.8", "types-PyYAML", "httpx2"]
 
 [project.scripts]
 titan = "titan.cli:main"

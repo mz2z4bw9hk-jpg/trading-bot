@@ -29,6 +29,7 @@ JSON_ARTIFACTS = {
     "quality": "quality.json",
     "manifest": "manifest.json",
     "tracking": "tracking.json",
+    "account": "account.json",
 }
 
 # What the dashboard page actually renders. ``signals``/``trades`` are audit
@@ -43,6 +44,7 @@ DASHBOARD_KEYS = (
     "quality",
     "manifest",
     "tracking",
+    "account",
     "equity",
     "regimes",
 )

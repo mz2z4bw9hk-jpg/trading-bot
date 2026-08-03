@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from titan.core.config import LabelConfig
@@ -53,6 +54,11 @@ class PaperTrackingStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps({"records": self._records}, indent=1))
 
+    @property
+    def records(self) -> list[dict]:
+        """The raw log, for consumers that derive state from it (the account)."""
+        return list(self._records)
+
     def _seen(self) -> set[tuple[str, str]]:
         return {(r["symbol"], r["date"]) for r in self._records}
 
@@ -73,12 +79,25 @@ class PaperTrackingStore:
                     "probability_high": None if s.probability_high is None else round(s.probability_high, 4),
                     "grade": s.trade_grade.value,
                     "model_version": s.model_version,
+                    # Account fields: what the signal committed to, so the
+                    # forward ledger can price it in dollars later. Recorded at
+                    # log time because the signal object is gone by resolve.
+                    "side": s.side.value,
+                    "size_fraction": round(s.position_size_fraction, 6),
+                    "risk_percentage": round(s.risk_percentage, 4),
+                    "cost_estimate": round(s.cost_estimate, 6),
+                    "signal_entry": round(s.market_entry, 8),
+                    "stop_loss": round(s.stop_loss, 8),
+                    "take_profit_levels": [round(t, 8) for t in s.take_profit_levels],
                     "logged_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
                     "outcome": None,
                     "touch": None,
                     "ret": None,
                     "bars_held": None,
                     "resolved_at": None,
+                    "exit_date": None,
+                    "entry_price": None,
+                    "exit_price": None,
                 }
             )
             seen.add(key)
@@ -129,6 +148,14 @@ class PaperTrackingStore:
                 rec["ret"] = round(float(row["ret"]), 5)
                 rec["bars_held"] = int(row["bars_held"])
                 rec["resolved_at"] = now
+                # Fills and the exit bar, for the forward account ledger. The
+                # exit date is only knowable here, where the bar calendar is in
+                # hand: bars_held alone cannot be mapped back to a date.
+                entry_price = float(row["entry"])
+                rec["entry_price"] = round(entry_price, 8)
+                rec["exit_price"] = round(entry_price * float(np.exp(row["ret"])), 8)
+                exit_pos = min(pos + int(row["bars_held"]), len(dates) - 1)
+                rec["exit_date"] = str(dates[exit_pos])
                 resolved += 1
         if resolved:
             self._save()
