@@ -553,12 +553,51 @@ replay realizes it there. A dip through liquidation that recovered still counts;
 an account that only looked at where price ended up would report it as a live
 winner.
 
-The dashboard re-reads the artifacts every 30 seconds, pausing while the tab is
-hidden and refreshing immediately on return. A failed fetch keeps the last good
-render rather than blanking a panel. Marking needs prices: `titan scan` and
-`titan track resolve` already have a dataset loaded and pass it; `titan account`
-loads one for the same reason, and `--no-marks` skips it for a realized-only
-view.
+Marking needs prices: `titan scan` and `titan track resolve` already have a
+dataset loaded and pass it; `titan account` loads one for the same reason, and
+`--no-marks` skips it for a realized-only view.
+
+#### Live refresh: three clocks, not one
+
+    titan dashboard --refresh 1 --quote-interval 15
+
+`--refresh` recomputes the account and has the page poll to match (default 1s;
+`0` serves static artifacts). `--quote-interval` is how often prices are
+actually fetched. They are separate because three different things change at
+three different rates, and collapsing them either wastes requests or reports
+stale data as fresh:
+
+| Clock | Rate | Why |
+|---|---|---|
+| **Account** | `--refresh`, default 1s | pure arithmetic, no network — recompute as fast as you want to look |
+| **Prices** | `--quote-interval`, default 15s | one batched vendor request; the only clock bounded by someone else |
+| **Bars** | 15 min, or when the date rolls | a `1d` config gains one bar a day; polling faster learns nothing |
+
+**A live vendor has a hard floor of 5s regardless of what you ask for.** This is
+a correctness guard, not politeness: being rate-limited does not give you slower
+data, it gives you *none*. Every fetch is one batched request for the whole
+universe — the research provider's per-symbol history calls would be ~180
+requests per tick, which is how an IP gets blocked. Failed fetches back off
+exponentially and keep serving the last good prices, and the status line shows
+how old they are so a fast poll can never imply fresh data it does not have.
+
+**Refreshing never creates an order.** New orders need a new *bar* — the gate,
+the setups and the labels are all defined on closes — so an intra-bar signal
+would be research the pipeline never did. Orders come from `titan scan`. What
+moves in between is the valuation of what is already open, which is what a
+broker screen shows between fills.
+
+On a **daily** config the prices behind the mark change once a day at the close,
+so a 1-second refresh redraws the same numbers all day. That is worth knowing
+before reading anything into a still balance: it is not frozen, there is just
+nothing new. Intraday configs (`data.timeframe: 1h`, say) is where the fast
+refresh earns its keep.
+
+The page pauses polling while its tab is hidden and refreshes immediately on
+return. A refresh tick re-reads only the account, the scan and the live status;
+the research panels reload only when `titan validate` reruns, so a 178-symbol
+correlation heatmap is not rebuilt every second. A failed fetch keeps the last
+good render rather than blanking a panel.
 
 On a CUSUM alarm: run `validate` to produce a challenger; let the promotion
 gate decide. Never hand-promote.

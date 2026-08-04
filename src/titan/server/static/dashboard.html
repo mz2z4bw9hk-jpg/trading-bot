@@ -116,6 +116,9 @@
   .sub-h { font-size: 11px; font-weight: 600; color: var(--ink-mut);
            text-transform: uppercase; letter-spacing: .05em; margin: 14px 0 4px; }
   .pnl-up { color: var(--good-text); } .pnl-dn { color: var(--critical); }
+  #last-refresh { font-weight: 400; text-transform: none; letter-spacing: 0;
+                  font-size: 11px; margin-left: 8px; }
+  #last-refresh.stale { color: var(--serious); }
   #account-kpis { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
   #account-kpis .v { font-size: 19px; }
   /* chips */
@@ -492,15 +495,16 @@ function heatmap(el, symbols, matrix) {
 let DATA = {};
 async function loadAll() {
   const [report, equity, regimes, scan, importance, universe, corr, manifest, quality,
-         tracking, account] =
+         tracking, account, live] =
     await Promise.all([
       getJSON("/api/report"), getJSON("/api/equity"), getJSON("/api/regimes"),
       getJSON("/api/scan"), getJSON("/api/importance"),
       getJSON("/api/universe"), getJSON("/api/correlation"), getJSON("/api/manifest"),
       getJSON("/api/quality"), getJSON("/api/tracking"), getJSON("/api/account"),
+      getJSON("/api/live"),
     ]);
   DATA = {report, equity, regimes, scan, importance, universe, corr, manifest, quality,
-          tracking, account};
+          tracking, account, live};
   render();
 }
 
@@ -555,7 +559,82 @@ function render() {
         <tr><td>Avg gross exposure</td><td class="num">${fmtPct(s.exposure)}</td></tr>
       </table>`;
   }
-  /* scanner */
+  renderScan();
+  renderAccount();
+  /* folds */
+  if (report) {
+    const f = report.folds;
+    barChart($("#fold-chart"), f.map(x=>"fold "+x.fold), f.map(x=>x.auc),
+      {color: cssVar("--series-1"), refline:0.5, fmt:v=>v.toFixed(2), min:0.4, max:0.7, height:170});
+    $("#fold-table").innerHTML = `
+      <tr><th>Fold</th><th>Test window</th><th class="num">AUC</th><th class="num">Brier</th><th class="num">Signals</th><th class="num">Features</th></tr>` +
+      f.map(x=>`<tr><td>${x.fold}</td><td>${esc(x.test_start)} → ${esc(x.test_end)}</td>
+        <td class="num">${fmtNum(x.auc,3)}</td><td class="num">${fmtNum(x.brier,3)}</td>
+        <td class="num">${x.n_signals}</td><td class="num">${x.n_features}</td></tr>`).join("");
+  }
+  /* importance */
+  if (importance) {
+    const entries = Object.entries(importance).slice(0,15);
+    hbarChart($("#importance-chart"), entries.map(e=>e[0]), entries.map(e=>+e[1]),
+      {color: cssVar("--seq-450")});
+  }
+  /* correlation */
+  if (corr) heatmap($("#corr-chart"), corr.symbols, corr.matrix);
+  /* regime breakdown */
+  if (report) {
+    const rb = report.regime_breakdown || {};
+    $("#regime-table").innerHTML = `
+      <tr><th>Regime</th><th class="num">Days</th><th class="num">Ann. return</th><th class="num">Sharpe</th></tr>` +
+      Object.entries(rb).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${v.days}</td>
+        <td class="num">${fmtPct(v.ann_return)}</td><td class="num">${fmtNum(v.sharpe)}</td></tr>`).join("") ||
+      `<tr><td class="empty">no data</td></tr>`;
+  }
+  /* paper tracking */
+  const trk = DATA.tracking;
+  if (trk && trk.n_predictions > 0) {
+    $("#tracking-card").hidden = false;
+    const k = (label, val, cls="") => `<div class="kpi"><div class="v ${cls}">${val}</div><div class="l">${label}</div></div>`;
+    $("#tracking-kpis").innerHTML =
+      k("Logged", trk.n_predictions) +
+      k("Resolved", trk.n_resolved) +
+      k("Open", trk.n_open ?? (trk.n_predictions - trk.n_resolved)) +
+      k("Hit rate", trk.hit_rate!=null ? fmtPct(trk.hit_rate) : "—") +
+      k("Rolling Brier", fmtNum(trk.rolling_brier_100,3)) +
+      k("Baseline Brier", fmtNum(trk.baseline_brier,3)) +
+      k("CUSUM", trk.cusum_alarm ? "ALARM" : "ok", trk.cusum_alarm ? "down" : "up");
+    const cal = trk.calibration || [];
+    $("#tracking-table").innerHTML = !cal.length ? "" : `
+      <tr><th>Predicted bin</th><th class="num">N</th><th class="num">Mean P</th><th class="num">Realized</th></tr>` +
+      cal.map(b => `<tr><td>${esc(b.bin)}</td><td class="num">${b.n}</td>
+        <td class="num">${fmtPct(b.mean_p)}</td><td class="num">${fmtPct(b.hit_rate)}</td></tr>`).join("");
+  }
+  /* universe */
+  if (DATA.universe && DATA.quality) {
+    const rel = DATA.universe.reliability || {};
+    const rows = Object.entries(DATA.quality).map(([sym,q]) => `
+      <tr><td><b>${esc(sym)}</b></td><td class="num">${q.n_bars}</td>
+      <td class="num">${fmtNum(q.reliability,3)}</td>
+      <td>${(q.issues||[]).slice(0,2).map(esc).join("; ") || "clean"}</td></tr>`).join("");
+    $("#universe-table").innerHTML =
+      `<tr><th>Symbol</th><th class="num">Bars</th><th class="num">Reliability</th><th>Issues</th></tr>` + rows;
+  }
+  /* Every panel above renders only when its payload arrived. A panel still
+     showing the initial placeholder therefore has no payload — say so, rather
+     than leaving "loading…" on screen forever, which reads as a hung fetch
+     when the artifact is actually missing or the API returned an error. */
+  document.querySelectorAll(".empty").forEach(el => {
+    if (el.textContent.trim() === LOADING) el.textContent = UNAVAILABLE;
+  });
+}
+
+/* ---------- panels that change between validate runs ----------------
+   Split out of render() so a refresh tick can redraw the account and the
+   order list WITHOUT rebuilding the research panels. Those change only
+   when `titan validate` reruns, and redrawing a 178x178 correlation
+   heatmap once a second to show identical numbers is how a live page
+   becomes a janky one. */
+function renderScan() {
+  const {scan} = DATA;
   if (scan) {
     $("#pill-regime").innerHTML = `regime: <b>${esc(scan.regime.regime)}</b> (${fmtPct(scan.regime.confidence,0)})`;
     $("#scan-meta").textContent = `scan date ${scan.date} · volatility ${scan.regime.vol_state.replace("_"," ")}`;
@@ -674,7 +753,9 @@ function render() {
         </tr>`).join("");
     }
   }
-  /* paper account */
+}
+
+function renderAccount() {
   const acct = DATA.account;
   if (acct) {
     const usd = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined,
@@ -809,71 +890,8 @@ function render() {
       notes.push(`${acct.n_legacy_unsized} prediction(s) logged before account tracking existed carry no size and are excluded.`);
     $("#account-note").textContent = notes.join(" ");
   }
-  /* folds */
-  if (report) {
-    const f = report.folds;
-    barChart($("#fold-chart"), f.map(x=>"fold "+x.fold), f.map(x=>x.auc),
-      {color: cssVar("--series-1"), refline:0.5, fmt:v=>v.toFixed(2), min:0.4, max:0.7, height:170});
-    $("#fold-table").innerHTML = `
-      <tr><th>Fold</th><th>Test window</th><th class="num">AUC</th><th class="num">Brier</th><th class="num">Signals</th><th class="num">Features</th></tr>` +
-      f.map(x=>`<tr><td>${x.fold}</td><td>${esc(x.test_start)} → ${esc(x.test_end)}</td>
-        <td class="num">${fmtNum(x.auc,3)}</td><td class="num">${fmtNum(x.brier,3)}</td>
-        <td class="num">${x.n_signals}</td><td class="num">${x.n_features}</td></tr>`).join("");
   }
-  /* importance */
-  if (importance) {
-    const entries = Object.entries(importance).slice(0,15);
-    hbarChart($("#importance-chart"), entries.map(e=>e[0]), entries.map(e=>+e[1]),
-      {color: cssVar("--seq-450")});
-  }
-  /* correlation */
-  if (corr) heatmap($("#corr-chart"), corr.symbols, corr.matrix);
-  /* regime breakdown */
-  if (report) {
-    const rb = report.regime_breakdown || {};
-    $("#regime-table").innerHTML = `
-      <tr><th>Regime</th><th class="num">Days</th><th class="num">Ann. return</th><th class="num">Sharpe</th></tr>` +
-      Object.entries(rb).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${v.days}</td>
-        <td class="num">${fmtPct(v.ann_return)}</td><td class="num">${fmtNum(v.sharpe)}</td></tr>`).join("") ||
-      `<tr><td class="empty">no data</td></tr>`;
-  }
-  /* paper tracking */
-  const trk = DATA.tracking;
-  if (trk && trk.n_predictions > 0) {
-    $("#tracking-card").hidden = false;
-    const k = (label, val, cls="") => `<div class="kpi"><div class="v ${cls}">${val}</div><div class="l">${label}</div></div>`;
-    $("#tracking-kpis").innerHTML =
-      k("Logged", trk.n_predictions) +
-      k("Resolved", trk.n_resolved) +
-      k("Open", trk.n_open ?? (trk.n_predictions - trk.n_resolved)) +
-      k("Hit rate", trk.hit_rate!=null ? fmtPct(trk.hit_rate) : "—") +
-      k("Rolling Brier", fmtNum(trk.rolling_brier_100,3)) +
-      k("Baseline Brier", fmtNum(trk.baseline_brier,3)) +
-      k("CUSUM", trk.cusum_alarm ? "ALARM" : "ok", trk.cusum_alarm ? "down" : "up");
-    const cal = trk.calibration || [];
-    $("#tracking-table").innerHTML = !cal.length ? "" : `
-      <tr><th>Predicted bin</th><th class="num">N</th><th class="num">Mean P</th><th class="num">Realized</th></tr>` +
-      cal.map(b => `<tr><td>${esc(b.bin)}</td><td class="num">${b.n}</td>
-        <td class="num">${fmtPct(b.mean_p)}</td><td class="num">${fmtPct(b.hit_rate)}</td></tr>`).join("");
-  }
-  /* universe */
-  if (DATA.universe && DATA.quality) {
-    const rel = DATA.universe.reliability || {};
-    const rows = Object.entries(DATA.quality).map(([sym,q]) => `
-      <tr><td><b>${esc(sym)}</b></td><td class="num">${q.n_bars}</td>
-      <td class="num">${fmtNum(q.reliability,3)}</td>
-      <td>${(q.issues||[]).slice(0,2).map(esc).join("; ") || "clean"}</td></tr>`).join("");
-    $("#universe-table").innerHTML =
-      `<tr><th>Symbol</th><th class="num">Bars</th><th class="num">Reliability</th><th>Issues</th></tr>` + rows;
-  }
-  /* Every panel above renders only when its payload arrived. A panel still
-     showing the initial placeholder therefore has no payload — say so, rather
-     than leaving "loading…" on screen forever, which reads as a hung fetch
-     when the artifact is actually missing or the API returned an error. */
-  document.querySelectorAll(".empty").forEach(el => {
-    if (el.textContent.trim() === LOADING) el.textContent = UNAVAILABLE;
-  });
-}
+
 
 /* ---------- keep the page current -------------------------------------
    The artifacts on disk change whenever `titan scan` or `titan track resolve`
@@ -886,18 +904,83 @@ function render() {
    refresh on return, since that is exactly when the numbers are most stale.
    Refreshing never interrupts a read: a failed fetch leaves the last good
    render in place rather than blanking a panel. */
-const REFRESH_MS = 30_000;
+let REFRESH_MS = 30_000;          // replaced by whatever /api/live declares
 let refreshTimer = null;
 let refreshing = false;
 
+/* The status line distinguishes three things a single "live" badge would
+   blur together: how often the PAGE re-reads, how old the PRICES are, and
+   whether anything is refreshing at all. A page polling every second against
+   an hour-old quote is not live, and should not look like it is. */
+function renderStatus(live) {
+  const el = $("#last-refresh");
+  if (!el) return;
+  const at = new Date().toLocaleTimeString();
+  if (!live || !live.enabled) {
+    el.textContent = `read ${at} · static artifacts`;
+    el.title = (live && live.reason) || "";
+    return;
+  }
+  const q = live.quotes || {};
+  const age = q.quote_age_seconds;
+  /* A bar-backed source is dated, not stale: its "age" against wall-clock is
+     meaningless on a historical dataset (it reads in the tens of thousands of
+     hours) and misleading on a live one, where what matters is which bar it
+     is. Live vendors get an age, because there the delay IS the story. */
+  const priceTxt = q.source === "frames"
+    ? (q.quote_time ? `bars to ${String(q.quote_time).slice(0, 10)}` : "no bars loaded")
+    : age == null ? "no quote yet"
+    : age < 90 ? `prices ${Math.round(age)}s old`
+    : age < 5400 ? `prices ${Math.round(age / 60)}m old`
+    : `prices ${(age / 3600).toFixed(1)}h old`;
+  const bad = live.error || (q.consecutive_failures > 0);
+  el.textContent = `${at} · every ${live.refresh_seconds}s · ${priceTxt}`
+    + (bad ? " · STALE" : "");
+  el.title = bad
+    ? (live.error || q.error || "quote fetches are failing; showing the last good prices")
+    : `${q.n_quotes || 0} quotes, polled every ${q.interval_seconds}s`;
+  el.className = bad ? "note stale" : "note";
+}
+
+/* A refresh tick reads only what can have changed since the last one: the
+   account (marked every tick), the scan (rewritten when a bar closes) and the
+   live status. The research artifacts — folds, importance, correlation,
+   walk-forward equity — change only when `titan validate` reruns, which the
+   manifest timestamp reports; a full reload happens then and not otherwise. */
 async function refresh() {
   if (refreshing || document.hidden) return;
   refreshing = true;
-  try { await loadAll(); } catch (e) { /* keep the last good render */ }
-  finally {
+  try {
+    const [account, scan, live, manifest] = await Promise.all([
+      getJSON("/api/account"), getJSON("/api/scan"),
+      getJSON("/api/live"), getJSON("/api/manifest"),
+    ]);
+    const revalidated = manifest && DATA.manifest
+      && manifest.generated !== DATA.manifest.generated;
+    if (revalidated) {
+      await loadAll();
+    } else {
+      if (account) DATA.account = account;
+      if (scan) DATA.scan = scan;
+      DATA.live = live;
+      renderAccount();
+      renderScan();
+    }
+    renderStatus(DATA.live);
+    applyInterval(DATA.live);
+  } catch (e) {
+    /* Keep the last good render: a dropped poll must not blank the page. */
+  } finally {
     refreshing = false;
-    const el = $("#last-refresh");
-    if (el) el.textContent = "updated " + new Date().toLocaleTimeString();
+  }
+}
+
+function applyInterval(live) {
+  const secs = live && live.refresh_seconds ? live.refresh_seconds : 30;
+  const ms = Math.max(500, secs * 1000);
+  if (ms !== REFRESH_MS || refreshTimer === null) {
+    REFRESH_MS = ms;
+    startRefresh();
   }
 }
 
@@ -909,15 +992,16 @@ function stopRefresh() {
   if (refreshTimer !== null) { clearInterval(refreshTimer); refreshTimer = null; }
 }
 
+/* A hidden tab polling forever is a battery drain nobody is looking at.
+   Resume with an immediate read, since that is when the numbers are stalest. */
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopRefresh();
   else { refresh(); startRefresh(); }
 });
 
 loadAll().then(() => {
-  const el = $("#last-refresh");
-  if (el) el.textContent = "updated " + new Date().toLocaleTimeString();
-  startRefresh();
+  renderStatus(DATA.live);
+  applyInterval(DATA.live);
 });
 </script>
 </body>

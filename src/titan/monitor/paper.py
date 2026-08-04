@@ -39,6 +39,16 @@ logger = get_logger(__name__)
 DEFAULT_BASELINE_BRIER = 0.25  # coin-flip Brier: alarm-only-on-worse fallback
 
 
+def paper_store_path(cfg) -> Path:
+    """Where a config's tracking log lives.
+
+    One definition, because two callers resolving it independently is how the
+    dashboard ends up serving an account replayed from a different log than the
+    one ``titan scan`` writes to.
+    """
+    return Path(cfg.model.store_dir) / "paper_track.json"
+
+
 class PaperTrackingStore:
     """Append-only JSON store of live predictions and their resolutions."""
 

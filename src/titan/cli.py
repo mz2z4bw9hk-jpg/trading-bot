@@ -7,7 +7,9 @@ Commands
   promotion gate against any existing production model.
 - ``titan scan``      rank the universe on the latest bar with the production
   bundle; writes scan artifacts.
-- ``titan dashboard`` serve the dashboard + JSON API over the artifacts dir.
+- ``titan dashboard`` serve the dashboard + JSON API over the artifacts dir;
+  with ``--refresh`` it also re-prices the open paper book on an interval so
+  the balance moves between bars.
 - ``titan export``    write the dashboard + artifacts as ONE self-contained
   HTML file: open by double-click, share, or drop on any static host — no
   server, no Python needed to view it.
@@ -201,7 +203,9 @@ def _config_mismatch_error(manifest, cfg: TitanConfig, allow: bool) -> str | Non
 
 
 def _paper_store_path(cfg: TitanConfig) -> Path:
-    return Path(cfg.model.store_dir) / "paper_track.json"
+    from titan.monitor.paper import paper_store_path
+
+    return paper_store_path(cfg)
 
 
 def _baseline_brier(cfg: TitanConfig) -> float:
@@ -344,9 +348,31 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
     cfg = _load_cfg(args)
     artifacts_dir = Path(args.artifacts or cfg.run.artifacts_dir)
-    app = create_app(artifacts_dir)
+
+    live = None
+    if args.refresh and args.refresh > 0:
+        from titan.server.live import LiveAccount
+
+        live = LiveAccount(
+            cfg, artifacts_dir,
+            interval_seconds=args.refresh,
+            quote_interval_seconds=args.quote_interval,
+        )
+        try:
+            live.tick()          # fail loudly at startup, not silently in a thread
+        except Exception as exc:
+            logger.warning("live refresh could not start (%s); serving static artifacts", exc)
+            live = None
+        else:
+            live.start()
+
+    app = create_app(artifacts_dir, live=live)
     logger.info("dashboard on http://%s:%d (artifacts: %s)", args.host, args.port, artifacts_dir)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        if live is not None:
+            live.stop()
     return 0
 
 
@@ -614,6 +640,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--artifacts", help="artifacts dir to serve")
     p_dash.add_argument("--host", default="127.0.0.1")
     p_dash.add_argument("--port", type=int, default=8321)
+    p_dash.add_argument(
+        "--refresh", type=float, default=1.0, metavar="SECONDS",
+        help="recompute the paper account this often and have the page poll to "
+             "match (default 1s; 0 disables and serves static artifacts)",
+    )
+    p_dash.add_argument(
+        "--quote-interval", type=float, default=15.0, metavar="SECONDS",
+        help="how often to fetch live prices (default 15s). A floor applies for "
+             "live vendors: polling faster risks being rate-limited into no data",
+    )
     p_dash.set_defaults(func=cmd_dashboard)
 
     p_exp = sub.add_parser(

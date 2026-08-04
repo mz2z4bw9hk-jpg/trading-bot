@@ -200,7 +200,7 @@ def _liquidation_distance(rec: dict, entry: float) -> float | None:
     return d if d > 0 else None
 
 
-def _daily_marks(frames: Mapping[str, Any] | None) -> dict[str, dict[str, dict[str, float]]]:
+def daily_marks(frames: Mapping[str, Any] | None) -> dict[str, dict[str, dict[str, float]]]:
     """Per symbol, per calendar date: the day's close, low and high.
 
     Keyed by ``YYYY-MM-DD`` strings because that is what the tracking log
@@ -208,6 +208,12 @@ def _daily_marks(frames: Mapping[str, Any] | None) -> dict[str, dict[str, dict[s
     already collapses to daily there and the mark has to meet it on the same
     grid. The day's last bar supplies the close; low and high span every bar in
     the day, which is what a liquidation touch has to be tested against.
+
+    Public and separable because it is the expensive half of a replay — a
+    groupby over every bar of every symbol — while depending on nothing but the
+    bars. A caller refreshing once a second recomputes it once per *reload*
+    and passes the result to :func:`replay`; recomputing it per tick costs
+    ~900ms on a 24-symbol book and would saturate the loop on its own.
     """
     if not frames:
         return {}
@@ -253,6 +259,9 @@ def replay(
     max_gross_exposure: float = 1.0,
     max_account_leverage: float = 1.0,
     frames: Mapping[str, Any] | None = None,
+    marks: Mapping[str, dict[str, dict[str, float]]] | None = None,
+    quotes: Mapping[str, float] | None = None,
+    quote_time: str | None = None,
 ) -> dict[str, Any]:
     """Replay tracked predictions into an account state.
 
@@ -273,6 +282,12 @@ def replay(
     levered positions whose price reached their liquidation level are realized
     there. Without it the replay behaves exactly as before — realized-only,
     which is correct, just blind between closes.
+
+    ``quotes`` supersedes the closing mark with a live price per symbol. Only
+    the *current* valuation moves: the historical curve stays on bar closes,
+    because a curve built from whatever price happened to be showing when each
+    point was written is not a curve of anything. The live price applies to the
+    final point, which is the one that is still being decided.
     """
     events: list[tuple[str, int, dict]] = []
     legacy = 0
@@ -297,7 +312,7 @@ def replay(
     skipped: list[dict] = []
     n_liquidated = 0
 
-    marks = _daily_marks(frames)
+    marks = marks if marks is not None else daily_marks(frames)
     events_by_date: dict[str, list[tuple[int, dict]]] = {}
     for date, kind, rec in events:
         events_by_date.setdefault(date, []).append((kind, rec))
@@ -494,6 +509,35 @@ def replay(
             "existed have no size and are excluded", legacy,
         )
 
+    # ---- live quotes supersede the closing mark ------------------------
+    # Applied after the walk, not inside it: the historical curve belongs to
+    # bar closes. Only the point still being decided moves with the tape.
+    if quotes:
+        for pos in live.values():
+            price = quotes.get(pos.symbol)
+            if price and price > 0:
+                pos.mark_price = price
+                pos.mark_date = quote_time or mark_date
+        live_unrealized = sum(
+            p.unrealized(p.mark_price) for p in live.values() if p.mark_price is not None
+        )
+        live_value = equity + live_unrealized
+        peak_marked = max(peak_marked, live_value)
+        max_marked_drawdown = min(max_marked_drawdown, live_value / peak_marked - 1.0)
+        point = {
+            "date": quote_time or mark_date or "live",
+            "equity": round(live_value, 2),
+            "cash": round(equity, 2),
+            "unrealized": round(live_unrealized, 2),
+        }
+        # Replace the last point when it covers the same instant, append when
+        # the quote is genuinely newer, so repeated ticks do not grow the curve
+        # without bound.
+        if equity_curve and equity_curve[-1]["date"] == point["date"]:
+            equity_curve[-1] = point
+        elif equity_curve or live:
+            equity_curve.append(point)
+
     unrealized_now = sum(
         p.unrealized(p.mark_price) for p in live.values() if p.mark_price is not None
     )
@@ -518,8 +562,10 @@ def replay(
         "account_value": round(account_value, 2),
         "unrealized_pnl": round(unrealized_now, 2),
         "marked_return": round(account_value / starting_equity - 1.0, 5),
-        "max_marked_drawdown": round(max_marked_drawdown, 5) if marks else None,
-        "mark_date": mark_date,
+        "max_marked_drawdown": round(max_marked_drawdown, 5) if (marks or quotes) else None,
+        "mark_date": quote_time or mark_date,
+        "bar_mark_date": mark_date,
+        "marked_live": bool(quotes),
         "n_unmarked": n_unmarked,
         "n_closed": len(ledger),
         "n_open": len(live),

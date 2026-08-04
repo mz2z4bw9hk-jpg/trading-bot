@@ -10,10 +10,12 @@ shared with the static exporter, so both views serve identical numbers.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from titan.core.jsonsafe import json_safe
 from titan.server.payloads import (
     JSON_ARTIFACTS,
     equity_payload,
@@ -24,7 +26,13 @@ from titan.server.payloads import (
 _STATIC = Path(__file__).parent / "static"
 
 
-def create_app(artifacts_dir: str | Path) -> FastAPI:
+def create_app(artifacts_dir: str | Path, live: Any = None) -> FastAPI:
+    """Serve ``artifacts_dir``; ``live`` is an optional running refresher.
+
+    The refresher is injected rather than constructed here so the app stays a
+    pure read-through when there is nothing live to report — an exported static
+    dashboard and a served one then answer identically.
+    """
     artifacts = Path(artifacts_dir)
     app = FastAPI(title="TITAN dashboard", docs_url=None, redoc_url=None)
 
@@ -64,6 +72,26 @@ def create_app(artifacts_dir: str | Path) -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="regimes.csv not found")
         return JSONResponse(payload)
+
+    @app.get("/api/live")
+    def live_status() -> JSONResponse:
+        """How fast the page should poll, and how fresh the prices behind it are.
+
+        Always answers. When nothing is refreshing, it says so and gives a
+        slow poll interval — a page reading static artifacts has nothing to
+        gain from a fast one, and should not imply the numbers are live.
+        """
+        if live is None:
+            return JSONResponse({
+                "enabled": False,
+                "refresh_seconds": 30,
+                "reason": (
+                    "no live refresh: artifacts change only when `titan scan` or "
+                    "`titan track resolve` runs. Start the dashboard with "
+                    "--refresh to mark the open book continuously."
+                ),
+            })
+        return JSONResponse(json_safe(live.status()))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
