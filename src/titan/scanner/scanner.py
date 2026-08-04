@@ -25,6 +25,7 @@ from titan.explain.evidence import LocalExplainer
 from titan.features.registry import FeaturePanel
 from titan.models.ensemble import CalibratedEnsemble
 from titan.regime.detector import RegimeDetector, RegimeSnapshot
+from titan.risk.leverage import LeverageTerms
 from titan.signals.analogues import AnalogueIndex
 from titan.signals.generator import SignalGenerator
 from titan.signals.schema import Signal
@@ -45,6 +46,7 @@ class ScanRow:
     probability: float
     uncertainty: float
     status: str          # "signal" or the rejection reason
+    asset_class: str = "equity"
     probability_low: float | None = None   # Venn-ABERS band, when available
     probability_high: float | None = None
     confidence: float = 0.0
@@ -55,6 +57,7 @@ class ScanRow:
         return {
             "rank": self.rank,
             "symbol": self.symbol,
+            "asset_class": self.asset_class,
             "probability": round(self.probability, 4),
             "probability_low": None if self.probability_low is None else round(self.probability_low, 4),
             "probability_high": None if self.probability_high is None else round(self.probability_high, 4),
@@ -72,12 +75,42 @@ class ScanResult:
     rows: list[ScanRow] = field(default_factory=list)
     signals: list[Signal] = field(default_factory=list)
 
+    def signals_by_asset_class(self) -> dict[str, list[Signal]]:
+        out: dict[str, list[Signal]] = {}
+        for s in self.signals:
+            out.setdefault(s.asset_class, []).append(s)
+        return out
+
+    @property
+    def portfolio_heat(self) -> float:
+        """Summed risk-at-stop across the emitted orders, in percent of equity.
+
+        Reported, not enforced. Leverage makes this worth looking at: five
+        crypto orders at 3x carry three times the heat the same five would
+        unlevered, and the per-position risk figure gives no hint of the total.
+        The scanner's job is to say what it found and what it would cost; how
+        many of those orders to actually place is the operator's call, and the
+        account applies its own funding ceilings besides.
+        """
+        return sum(s.risk_percentage for s in self.signals)
+
     def to_dict(self) -> dict:
         return {
             "date": str(self.date.date()),
             "regime": self.regime.to_dict(),
             "rows": [r.to_dict() for r in self.rows],
             "signals": [s.to_dict() for s in self.signals],
+            "orders_by_asset_class": {
+                k: len(v) for k, v in sorted(self.signals_by_asset_class().items())
+            },
+            "portfolio_heat_pct": round(self.portfolio_heat, 3),
+            "gross_notional_pct": round(
+                100.0 * sum(s.position_size_fraction for s in self.signals), 2
+            ),
+            "margin_required_pct": round(
+                100.0 * sum(s.margin_fraction or s.position_size_fraction
+                            for s in self.signals), 2
+            ),
         }
 
 
@@ -99,6 +132,23 @@ class MarketScanner:
         self._detector = detector
         self._explainer = explainer
         self._analogues = analogues
+        self._terms_cache: dict[str, LeverageTerms] = {}
+
+    # ------------------------------------------------------------------ #
+
+    def _asset_class(self, dataset: MarketDataset, symbol: str) -> str:
+        """The symbol's class, defaulting to equity for anything unregistered."""
+        try:
+            return str(dataset.universe.instrument(symbol).asset_class)
+        except KeyError:
+            return "equity"
+
+    def _leverage_terms(self, asset_class: str) -> LeverageTerms:
+        if asset_class not in self._terms_cache:
+            self._terms_cache[asset_class] = LeverageTerms.resolve(
+                self._cfg.risk.leverage, asset_class, self._cfg.data.timeframe
+            )
+        return self._terms_cache[asset_class]
 
     # ------------------------------------------------------------------ #
 
@@ -154,8 +204,10 @@ class MarketScanner:
             band: tuple[float, float] | None = (
                 (float(bands[i][0]), float(bands[i][1])) if bands is not None else None
             )
+            asset_class = self._asset_class(dataset, str(sym))
             row = ScanRow(
                 symbol=str(sym), probability=p, uncertainty=unc, status="",
+                asset_class=asset_class,
                 probability_low=band[0] if band else None,
                 probability_high=band[1] if band else None,
             )
@@ -181,6 +233,8 @@ class MarketScanner:
                     explainer=self._explainer,
                     model_version="scanner",
                     interval_provider=_fixed_band(band) if band is not None else None,
+                    asset_class=asset_class,
+                    leverage_terms=self._leverage_terms(asset_class),
                 )
                 if signal is None:
                     row.status = "failed adaptive EV gate"
@@ -194,6 +248,7 @@ class MarketScanner:
         for sym in stale:
             rows.append(ScanRow(
                 symbol=str(sym), probability=float("nan"), uncertainty=float("nan"),
+                asset_class=self._asset_class(dataset, str(sym)),
                 status=f"stale: last bar {own_date[sym].date()} ({lag[sym]} bars behind)",
             ))
 
@@ -228,27 +283,66 @@ class MarketScanner:
                                  -r.confidence, -r.probability))
         for rank, row in enumerate(rows, start=1):
             row.rank = rank
-        signals.sort(key=lambda s: -s.confidence_score)
-        top_n = self._cfg.scanner.top_n
-        result = ScanResult(
-            date=last_date, regime=snapshot, rows=rows, signals=signals[:top_n]
+
+        selected = self._select(signals)
+        result = ScanResult(date=last_date, regime=snapshot, rows=rows, signals=selected)
+        by_class = ", ".join(
+            f"{k} {len(v)}" for k, v in sorted(result.signals_by_asset_class().items())
         )
         logger.info(
-            "scan %s: %d instruments (%d ranked, %d stale), %d actionable signals "
-            "(%d model, %d technical) (regime=%s)",
+            "scan %s: %d instruments (%d ranked, %d stale), %d candidates "
+            "(%d model, %d technical) -> %d orders [%s] (regime=%s)",
             last_date.date(), len(rows), len(fresh), len(stale), len(signals),
-            len(signals) - n_tech, n_tech, snapshot.regime.value,
+            len(signals) - n_tech, n_tech, len(selected), by_class or "none",
+            snapshot.regime.value,
         )
         return result
+
+    # ------------------------------------------------------------------ #
+
+    def _select(self, candidates: list[Signal]) -> list[Signal]:
+        """Rank candidates within each asset class and fill that class's quota.
+
+        Two rules, both about not deceiving the reader of the order list:
+
+        One order per symbol. The model gate and the rule engine can fire on
+        the same name on the same bar, and shipping both would put two tickets
+        on one instrument — double the intended size, from what looks like two
+        independent ideas but is one. The model order wins the collision: it is
+        the one with out-of-sample evidence behind it.
+
+        Quotas are per asset class, not global. Crypto and equities differ by
+        an order of magnitude in volatility, so a single ranked list is not a
+        fair fight — the louder class takes every slot, and the account ends up
+        concentrated in whichever one happened to be moving.
+        """
+        best: dict[str, Signal] = {}
+        for s in sorted(candidates, key=lambda s: -s.confidence_score):
+            prior = best.get(s.symbol)
+            if prior is None or (prior.source != "model" and s.source == "model"):
+                best[s.symbol] = s
+
+        by_class: dict[str, list[Signal]] = {}
+        for s in best.values():
+            by_class.setdefault(s.asset_class, []).append(s)
+
+        out: list[Signal] = []
+        for asset_class, group in by_class.items():
+            group.sort(key=lambda s: -s.confidence_score)
+            out.extend(group[: self._cfg.scanner.quota_for(asset_class)])
+        out.sort(key=lambda s: (s.asset_class, -s.confidence_score))
+        return out
 
     # ------------------------------------------------------------------ #
 
     def _technical_signals(self, dataset, symbols, own_date, snapshot) -> list[Signal]:
         """Fire the rule set over each instrument's own freshest bar.
 
-        Ranked by setup strength and capped, because a trending day fires
-        dozens across a large universe and an account that took them all would
-        be fully committed to a single day's worth of patterns.
+        Ranked by setup strength and capped PER ASSET CLASS, because a trending
+        day fires dozens across a large universe and an account that took them
+        all would be fully committed to a single day's worth of patterns. The
+        cap is per class so a broad equity rally cannot crowd crypto out of the
+        list, or the reverse.
         """
         from titan.signals.technical import detect, to_signal
 
@@ -259,6 +353,7 @@ class MarketScanner:
             if frame is None:
                 continue
             window = frame.loc[: own_date[sym]]
+            asset_class = self._asset_class(dataset, str(sym))
             for setup in detect(window, cfg.setups, min_risk_reward=cfg.min_risk_reward):
                 signal = to_signal(
                     setup,
@@ -271,6 +366,8 @@ class MarketScanner:
                     vol_state=snapshot.vol_state,
                     regime_confidence=snapshot.confidence,
                     reliability=float(dataset.reliability.get(str(sym), 1.0)),
+                    asset_class=asset_class,
+                    leverage_terms=self._leverage_terms(asset_class),
                 )
                 if signal is not None:
                     candidates.append((setup.strength, signal))
@@ -278,12 +375,14 @@ class MarketScanner:
         candidates.sort(key=lambda c: -c[0])
         # One order per symbol: two rules firing on the same name is one idea.
         seen: set[str] = set()
+        taken: dict[str, int] = {}
         out: list[Signal] = []
         for _, signal in candidates:
             if signal.symbol in seen:
                 continue
+            if taken.get(signal.asset_class, 0) >= cfg.max_orders_per_scan:
+                continue
             seen.add(signal.symbol)
+            taken[signal.asset_class] = taken.get(signal.asset_class, 0) + 1
             out.append(signal)
-            if len(out) >= cfg.max_orders_per_scan:
-                break
         return out

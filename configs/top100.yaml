@@ -262,9 +262,41 @@ signals:
   # paper account can tell you which source actually made money.
   technical:
     enabled: true
+    # Per asset class, so a broad equity rally cannot crowd crypto off the
+    # list. With both books enabled this feeds up to 10 candidates per scan.
     max_orders_per_scan: 5
     min_risk_reward: 1.5
+
+scanner:
+  top_n: 10
+  # Five equities and five crypto, ranked inside their own book. A single
+  # global top-10 would not produce this: crypto's volatility is several times
+  # an equity's, so it wins nearly every slot on confidence and the equity book
+  # never trades.
+  orders_per_asset_class:
+    equity: 5
+    crypto: 5
 
 risk:
   target_annual_vol: 0.10
   risk_per_trade_pct: 0.4
+  leverage:
+    # Crypto perpetuals only. Equities are absent and therefore trade at 1x —
+    # margin on a stock needs a broker agreement that a config file has no
+    # business assuming exists.
+    #
+    # 3x is a ceiling, not a setting. Each order solves for the largest
+    # multiple whose liquidation price stays 1.5 stop-widths beyond its stop
+    # and takes the smaller of the two, so wide-stop trades de-lever
+    # themselves. What it does NOT do is make trades safer: at 3x, a stop that
+    # cost 0.4% of equity costs 1.2%. The order card's risk column shows the
+    # levered number.
+    max_leverage:
+      crypto: 3.0
+    maintenance_margin_rate: 0.005
+    funding_bps_daily: 3.0     # ~0.01% per 8h, charged on notional
+    stop_buffer: 1.5
+    # Ceiling on summed notional across the book. Five 3x crypto positions
+    # would otherwise stack to far more market exposure than one balance can
+    # answer for.
+    max_account_leverage: 2.0

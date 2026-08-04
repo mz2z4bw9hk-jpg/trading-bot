@@ -32,6 +32,8 @@ from titan.core.timeframe import TRADING_DAYS_PER_YEAR as TRADING_DAYS
 from titan.core.types import Regime, Side, TradeGrade, VolState
 from titan.explain.evidence import LocalExplainer
 from titan.features.rolling import atr as compute_atr
+from titan.risk.leverage import LeverageTerms
+from titan.risk.leverage import plan as leverage_plan
 from titan.risk.sizing import atr_risk_size, fractional_kelly, vol_target_size
 from titan.signals.analogues import AnalogueReport
 from titan.signals.schema import Signal
@@ -63,15 +65,19 @@ class SignalGenerator:
 
     # ------------------------------------------------------------------ #
 
-    def adaptive_threshold(self, sigma: float, regime: Regime) -> tuple[float, float]:
+    def adaptive_threshold(
+        self, sigma: float, regime: Regime, *, extra_cost: float = 0.0
+    ) -> tuple[float, float]:
         """(threshold, round_trip_cost). Break-even p plus margin, regime-tightened.
 
         With TP at +a and stop at -b, EV(p) = p·a − (1−p)·b − cost. Requiring
-        EV ≥ margin gives p ≥ (b + cost + margin) / (a + b).
+        EV ≥ margin gives p ≥ (b + cost + margin) / (a + b). ``extra_cost``
+        carries holding costs the round trip does not price — perpetual funding
+        on a levered position, specifically — into the same break-even.
         """
         a = self._labels.tp_sigma * sigma
         b = self._labels.sl_sigma * sigma
-        cost = self._costs.round_trip_cost_fraction(sigma)
+        cost = self._costs.round_trip_cost_fraction(sigma) + max(extra_cost, 0.0)
         margin = self._cfg.ev_margin_bps / 1e4
         if regime in _HOSTILE_REGIMES:
             margin *= 2.0
@@ -97,6 +103,8 @@ class SignalGenerator:
         explainer: LocalExplainer | None = None,
         model_version: str = "",
         interval_provider: Callable[[], tuple[float, float]] | None = None,
+        asset_class: str = "equity",
+        leverage_terms: LeverageTerms | None = None,
     ) -> Signal | None:
         """Build a signal for one (symbol, date) candidate, or return None.
 
@@ -117,14 +125,25 @@ class SignalGenerator:
             return None
         sigma = max(sigma, self._labels.min_vol_floor)
 
-        tau, cost = self.adaptive_threshold(sigma, regime)
+        a = self._labels.tp_sigma * sigma
+        b = self._labels.sl_sigma * sigma
+
+        # Leverage is priced BEFORE the gate, not bolted on after it. Funding
+        # is a real cost of holding levered notional, so it belongs in the
+        # break-even probability the trade has to clear — otherwise the gate
+        # approves a trade on economics the position does not actually have.
+        terms = leverage_terms or LeverageTerms.spot()
+        holding_bars = (
+            analogue.median_bars_held if analogue else self._labels.horizon_bars / 2
+        )
+        funding = terms.funding_per_bar * max(holding_bars, 0.0) if terms.enabled else 0.0
+
+        tau, cost = self.adaptive_threshold(sigma, regime, extra_cost=funding)
         if probability < tau:
             return None
         if uncertainty > self._cfg.max_uncertainty:
             return None
 
-        a = self._labels.tp_sigma * sigma
-        b = self._labels.sl_sigma * sigma
         ev = probability * a - (1.0 - probability) * b - cost
         if ev < self._cfg.ev_margin_bps / 1e4:
             return None
@@ -162,6 +181,14 @@ class SignalGenerator:
         # ---- prices ------------------------------------------------------
         atr_val = float(compute_atr(frame, 14).iloc[-1])
         stop = close * (1.0 - b)
+        lev = leverage_plan(
+            base_size=size,
+            entry=close,
+            stop_distance=b,
+            side=Side.LONG,
+            holding_bars=holding_bars,
+            terms=terms,
+        )
         atr_stop = close - 2.0 * atr_val
         tps = [close * (1.0 + m * a) for m in (0.5, 1.0, 1.5)]
         limit_entry = close - 0.25 * atr_val
@@ -203,6 +230,17 @@ class SignalGenerator:
             )
         if reliability < 0.9:
             conflicting.append(f"data reliability {reliability:.2f}")
+        if lev.is_levered:
+            supporting.append(
+                f"{lev.leverage:.1f}x margin: {lev.margin_fraction:.1%} of equity posted "
+                f"for {lev.notional_fraction:.1%} of notional"
+            )
+            conflicting.append(
+                f"leveraged {lev.leverage:.1f}x — the stop now costs "
+                f"{100.0 * lev.risk_fraction_of_equity:.2f}% of equity, and liquidation "
+                f"sits at {lev.liquidation_price:.6g} "
+                f"({lev.liquidation_distance:.1%} against the entry)"
+            )
 
         institutional = self._institutional_score(feature_row, explainer)
 
@@ -225,6 +263,7 @@ class SignalGenerator:
             date=date,
             side=Side.LONG,
             model_version=model_version,
+            asset_class=asset_class,
             probability=probability,
             probability_low=p_low,
             probability_high=p_high,
@@ -243,9 +282,13 @@ class SignalGenerator:
             stop_loss=stop,
             atr_stop=atr_stop,
             take_profit_levels=tps,
-            position_size_fraction=size,
-            risk_percentage=100.0 * size * b,
-            expected_holding_bars=analogue.median_bars_held if analogue else self._labels.horizon_bars / 2,
+            position_size_fraction=lev.notional_fraction,
+            risk_percentage=100.0 * lev.risk_fraction_of_equity,
+            leverage=lev.leverage,
+            margin_fraction=lev.margin_fraction,
+            liquidation_price=lev.liquidation_price,
+            funding_cost=lev.funding_cost,
+            expected_holding_bars=holding_bars,
             expected_volatility=sigma * np.sqrt(self._labels.horizon_bars),
             mae_estimate=analogue.mae_p75 if analogue else -b,
             mfe_estimate=analogue.mfe_p50 if analogue else a,

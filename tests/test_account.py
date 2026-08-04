@@ -192,3 +192,128 @@ def test_max_drawdown_is_measured_from_the_running_peak():
     state = replay(recs)
     assert state["max_drawdown"] < 0
     assert state["max_drawdown"] == pytest.approx(math.expm1(-0.10), abs=1e-5)
+
+
+# ------------------------------------------------------------- leverage --
+
+
+def _levered(leverage=3.0, entry_price=100.0, mmr=0.005, **kwargs):
+    """A record carrying the margin terms the scanner would have written."""
+    rec = _record(entry_price=entry_price, **kwargs)
+    rec["leverage"] = leverage
+    rec["margin_fraction"] = rec["size_fraction"] / leverage
+    rec["liquidation_price"] = entry_price * (1 - (1 / leverage - mmr))
+    rec["asset_class"] = "crypto"
+    return rec
+
+
+def test_a_levered_position_ties_up_only_its_margin():
+    """3x notional posts a third of the cash. That is the entire point of it."""
+    state = replay([_levered(leverage=3.0, size=0.30, outcome=None, exit_date=None)])
+
+    assert state["n_open"] == 1
+    assert state["open_notional"] == pytest.approx(300_000.0)
+    assert state["open_margin"] == pytest.approx(100_000.0)
+    assert state["account_leverage"] == pytest.approx(0.30)
+
+
+def test_leverage_multiplies_the_pnl_on_the_same_move():
+    spot = replay([_record(ret=0.05, size=0.10)])
+    lev = replay([_levered(leverage=3.0, ret=0.05, size=0.30)])
+
+    assert lev["realized_pnl"] == pytest.approx(3 * spot["realized_pnl"], rel=1e-6)
+
+
+def test_a_position_cannot_lose_more_than_the_margin_behind_it():
+    """The failure this guard exists for.
+
+    A 3x position down 50% is arithmetically -150% of notional. No account
+    produces that number: the exchange closes the trade at the liquidation
+    price and takes the margin. Without the cap the ledger would post a loss
+    larger than the cash the position ever had.
+    """
+    state = replay([_levered(leverage=3.0, ret=-0.70, size=0.30, outcome=0, touch="sl")])
+
+    margin = 1_000_000 * 0.10
+    assert state["realized_pnl"] == pytest.approx(-margin, abs=0.01)
+    assert state["n_liquidated"] == 1
+    assert state["trades"][0]["exit_reason"] == "liquidated"
+    assert state["trades"][0]["liquidated"] is True
+
+
+def test_a_loss_short_of_liquidation_is_posted_in_full():
+    state = replay([_levered(leverage=3.0, ret=-0.05, size=0.30, outcome=0, touch="sl")])
+
+    expected = 1_000_000 * 0.30 * math.expm1(-0.05)
+    assert state["realized_pnl"] == pytest.approx(expected, abs=0.01)
+    assert state["n_liquidated"] == 0
+    assert state["trades"][0]["liquidated"] is False
+
+
+def test_spot_positions_are_never_liquidated():
+    """A cash position down 70% is down 70%, not wiped."""
+    state = replay([_record(ret=-1.20, size=0.30, outcome=0, touch="sl")])
+    assert state["n_liquidated"] == 0
+    assert state["realized_pnl"] < 0
+
+
+def test_return_on_margin_is_reported_alongside_return_on_notional():
+    state = replay([_levered(leverage=3.0, ret=0.05, size=0.30)])
+    row = state["trades"][0]
+
+    assert row["return_on_margin"] == pytest.approx(3 * row["net_return"], rel=1e-3)
+    assert row["leverage"] == 3.0
+    assert row["margin"] == pytest.approx(100_000.0)
+
+
+def test_the_account_leverage_cap_refuses_the_position_that_breaches_it():
+    """Per-position limits cannot see the book. This is what does."""
+    records = [
+        _levered(symbol=f"C{i}", leverage=3.0, size=0.60,
+                 date=f"2024-01-0{i + 1}", outcome=None, exit_date=None)
+        for i in range(4)
+    ]
+    state = replay(records, max_gross_exposure=1.0, max_account_leverage=2.0)
+
+    assert state["n_open"] == 3               # 3 x 60% notional = 180% <= 200%
+    assert state["n_skipped_exposure"] == 1
+    assert "account leverage" in state["skipped"][0]["reason"]
+
+
+def test_margin_not_notional_is_what_the_cash_cap_measures():
+    """Six 3x positions at 30% notional each: 180% exposure on 60% of cash.
+
+    Charging the cash cap on notional would refuse four of these, which would
+    be the account declining trades it can perfectly well fund.
+    """
+    records = [
+        _levered(symbol=f"C{i}", leverage=3.0, size=0.30,
+                 date=f"2024-01-0{i + 1}", outcome=None, exit_date=None)
+        for i in range(6)
+    ]
+    state = replay(records, max_gross_exposure=1.0, max_account_leverage=10.0)
+
+    assert state["n_open"] == 6
+    assert state["open_margin"] == pytest.approx(600_000.0)
+    assert state["open_notional"] == pytest.approx(1_800_000.0)
+
+
+def test_pnl_is_split_by_asset_class():
+    state = replay([
+        _record(symbol="AAPL", ret=0.05, size=0.10),
+        _levered(symbol="BTC-USD", leverage=3.0, ret=0.05, size=0.30),
+    ])
+    by_class = state["by_asset_class"]
+
+    assert set(by_class) == {"equity", "crypto"}
+    assert by_class["crypto"]["pnl"] == pytest.approx(3 * by_class["equity"]["pnl"], rel=1e-4)
+
+
+def test_records_without_leverage_fields_replay_as_cash():
+    """Logs written before margin existed must not be reinterpreted."""
+    state = replay([_record(ret=0.05, size=0.10)])
+    row = state["trades"][0]
+
+    assert row["leverage"] == 1.0
+    assert row["margin"] == row["notional"]
+    assert state["n_liquidated"] == 0

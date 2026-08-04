@@ -45,6 +45,7 @@ import pandas as pd
 from titan.core.log import get_logger
 from titan.core.types import Side
 from titan.features import rolling as R
+from titan.risk.leverage import LeverageTerms
 
 if TYPE_CHECKING:  # avoid a cycle: schema imports nothing from here
     from titan.signals.schema import Signal
@@ -350,6 +351,8 @@ def to_signal(
     vol_state,
     regime_confidence: float = 0.0,
     reliability: float = 1.0,
+    asset_class: str = "equity",
+    leverage_terms: LeverageTerms | None = None,
 ) -> Signal | None:
     """Package a fired rule as the same Signal the rest of the platform speaks.
 
@@ -359,8 +362,14 @@ def to_signal(
     probability, and a rule does not produce one. Reporting a made-up
     ``probability`` here would put a number on the order card that nothing
     computed, so it stays at zero and the card shows the setup instead.
+
+    ``leverage_terms`` then scales that unlevered weight into notional. The
+    reported risk is recomputed on the levered notional, and funding for the
+    expected hold joins the cost the setup has to clear — leverage that cannot
+    pay its own rent out of the move it is predicting is not worth taking.
     """
     from titan.core.types import TradeGrade
+    from titan.risk.leverage import plan as leverage_plan
     from titan.risk.sizing import atr_risk_size
     from titan.signals.schema import Signal
 
@@ -373,12 +382,26 @@ def to_signal(
     if size <= 1e-4:
         return None
 
+    terms = leverage_terms or LeverageTerms.spot()
+    holding_bars = 10.0
+    lev = leverage_plan(
+        base_size=size,
+        entry=entry,
+        stop_distance=risk_fraction,
+        side=setup.side,
+        holding_bars=holding_bars,
+        terms=terms,
+    )
+
     sigma = float(
         np.log(frame["close"]).diff().ewm(span=21, adjust=False).std().iloc[-1]
     )
     cost = cost_model.round_trip_cost_fraction(sigma if np.isfinite(sigma) else 0.01)
+    cost += lev.funding_cost
     atr = float(R.atr(frame, 14).iloc[-1])
     reward = (setup.targets[min(1, len(setup.targets) - 1)] - entry) / entry
+    if reward <= cost:
+        return None
 
     # Grade from the rule's own quality, not from a probability it never had.
     score = 50.0 + 25.0 * setup.strength + 10.0 * min(setup.risk_reward / 3.0, 1.0)
@@ -388,12 +411,29 @@ def to_signal(
         TradeGrade.B_PLUS if score >= 60 else TradeGrade.B
     )
 
+    evidence = list(setup.evidence)
+    conflicting = [
+        "rule-based setup: no out-of-sample probability behind this order",
+    ]
+    if lev.is_levered:
+        evidence.append(
+            f"{lev.leverage:.1f}x margin: {lev.margin_fraction:.1%} of equity posted "
+            f"for {lev.notional_fraction:.1%} of notional"
+        )
+        conflicting.append(
+            f"leveraged {lev.leverage:.1f}x — the stop now costs "
+            f"{100.0 * lev.risk_fraction_of_equity:.2f}% of equity, and liquidation "
+            f"sits at {lev.liquidation_price:.6g} "
+            f"({lev.liquidation_distance:.1%} against the entry)"
+        )
+
     return Signal(
         symbol=symbol,
         date=date,
         side=setup.side,
         model_version="technical",
         source=f"technical:{setup.name}",
+        asset_class=asset_class,
         probability=0.0,
         uncertainty=0.0,
         confidence_score=round(score, 1),
@@ -409,17 +449,21 @@ def to_signal(
         stop_loss=setup.stop,
         atr_stop=entry - 2.0 * atr if atr > 0 else setup.stop,
         take_profit_levels=list(setup.targets),
-        position_size_fraction=size,
-        risk_percentage=100.0 * size * risk_fraction,
-        expected_holding_bars=10.0,
+        position_size_fraction=lev.notional_fraction,
+        risk_percentage=100.0 * lev.risk_fraction_of_equity,
+        leverage=lev.leverage,
+        margin_fraction=lev.margin_fraction,
+        liquidation_price=lev.liquidation_price,
+        funding_cost=lev.funding_cost,
+        expected_holding_bars=holding_bars,
         expected_volatility=abs(sigma) if np.isfinite(sigma) else 0.0,
         market_regime=regime,
         vol_state=vol_state,
         regime_confidence=regime_confidence,
         data_reliability=reliability,
-        supporting_evidence=list(setup.evidence),
-        conflicting_evidence=[
-            "rule-based setup: no out-of-sample probability behind this order",
-        ],
-        reasoning=setup.rationale,
+        supporting_evidence=evidence,
+        conflicting_evidence=conflicting,
+        reasoning=setup.rationale + (
+            f" Traded at {lev.leverage:.1f}x margin." if lev.is_levered else ""
+        ),
     )

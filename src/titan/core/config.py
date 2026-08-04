@@ -171,6 +171,51 @@ class BacktestConfig(BaseModel):
     stop_first_on_ambiguous_bar: bool = True  # pessimistic intrabar assumption
 
 
+class LeverageConfig(BaseModel):
+    """Margin trading, per asset class. Empty means cash-only everywhere.
+
+    ``max_leverage`` is a ceiling, not a setting: each order solves for the
+    largest multiple whose liquidation price stays ``stop_buffer`` stop-widths
+    away, and takes the smaller of that and this. Crypto perpetuals are the
+    intended use; equities are left at 1.0 unless a broker margin agreement
+    actually exists, which is not something a config file should assume.
+
+    Raising this raises risk proportionally — 3x notional on the same stop is
+    3x the loss when the stop fills. That is what leverage is.
+    """
+
+    max_leverage: dict[str, float] = Field(default_factory=dict)
+    # Exchange maintenance margin. Real venues tier it by notional; a flat rate
+    # is conservative at the sizes these orders occupy.
+    maintenance_margin_rate: float = Field(0.005, gt=0, lt=0.5)
+    # Perpetual funding on notional, per day. ~0.01%/8h is the resting rate on
+    # major perps. Charged for the expected hold and folded into the EV gate.
+    funding_bps_daily: float = Field(3.0, ge=0)
+    # How many stop-widths of room the liquidation level must keep. 1.0 would
+    # mean liquidation exactly at the stop — the stop would never fill.
+    stop_buffer: float = Field(1.5, ge=1.0)
+    # Ceiling on summed notional as a multiple of equity. Per-position leverage
+    # says how large one trade may be; this says how large the book may get.
+    max_account_leverage: float = Field(2.0, ge=1.0)
+
+    @field_validator("max_leverage")
+    @classmethod
+    def _sane_multiples(cls, v: dict[str, float]) -> dict[str, float]:
+        for asset_class, lev in v.items():
+            if not 1.0 <= lev <= 20.0:
+                raise ValueError(
+                    f"risk.leverage.max_leverage[{asset_class!r}] = {lev}: leverage must be "
+                    "between 1.0 (cash) and 20.0. Above ~20x the liquidation "
+                    "distance is inside a single bar's normal range and the "
+                    "position is a coin flip on noise, not a trade."
+                )
+        return v
+
+    def for_asset_class(self, asset_class: str) -> float:
+        """Ceiling for one asset class; unlisted classes trade unlevered."""
+        return float(self.max_leverage.get(asset_class, 1.0))
+
+
 class RiskConfig(BaseModel):
     risk_per_trade_pct: float = Field(0.5, gt=0, le=5.0)  # percent of equity at stop
     kelly_fraction: float = Field(0.25, gt=0, le=1.0)
@@ -195,6 +240,7 @@ class RiskConfig(BaseModel):
             "crash": 0.0,
         }
     )
+    leverage: LeverageConfig = Field(default_factory=LeverageConfig)
 
 
 class TechnicalConfig(BaseModel):
@@ -215,9 +261,11 @@ class TechnicalConfig(BaseModel):
             "macd_momentum",
         ]
     )
-    # Cap on technical orders per scan, taken strongest-first. Without a cap a
-    # 178-name universe can fire dozens on a trending day and the account would
-    # be fully committed to one day's worth of setups.
+    # Cap on technical orders per scan PER ASSET CLASS, taken strongest-first.
+    # Without a cap a 178-name universe fires dozens on a trending day and the
+    # account would be fully committed to one day's worth of setups. Per class
+    # rather than overall so that a day when every equity breaks out does not
+    # crowd crypto off the list entirely, and vice versa.
     max_orders_per_scan: int = Field(5, ge=1)
     # A rule that pays less at its second target than it risks at its stop is
     # not a trade, however cleanly the pattern printed.
@@ -250,6 +298,28 @@ class ScannerConfig(BaseModel):
     # day, so after a long weekend an equity's freshest bar is 3-4 panel dates
     # old and is still perfectly current for that instrument.
     max_staleness_bars: int = Field(5, ge=0)
+    # Orders to emit per asset class, e.g. {equity: 5, crypto: 5}. Ranking
+    # within a class rather than across one avoids the failure mode of a single
+    # global top-N: crypto and equities move on different clocks and volatility
+    # scales, so one class routinely sweeps every slot and the other is never
+    # traded at all. Classes not named here fall back to ``top_n``.
+    orders_per_asset_class: dict[str, int] | None = None
+
+    @field_validator("orders_per_asset_class")
+    @classmethod
+    def _positive_quotas(cls, v: dict[str, int] | None) -> dict[str, int] | None:
+        if v is not None:
+            for asset_class, n in v.items():
+                if n < 0:
+                    raise ValueError(
+                        f"scanner.orders_per_asset_class[{asset_class!r}] must be >= 0"
+                    )
+        return v
+
+    def quota_for(self, asset_class: str) -> int:
+        if self.orders_per_asset_class is None:
+            return self.top_n
+        return int(self.orders_per_asset_class.get(asset_class, self.top_n))
 
 
 class MonitorConfig(BaseModel):

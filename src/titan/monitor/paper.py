@@ -84,9 +84,19 @@ class PaperTrackingStore:
                     # log time because the signal object is gone by resolve.
                     "side": s.side.value,
                     "source": s.source,
+                    "asset_class": s.asset_class,
                     "size_fraction": round(s.position_size_fraction, 6),
                     "risk_percentage": round(s.risk_percentage, 4),
                     "cost_estimate": round(s.cost_estimate, 6),
+                    # Margin terms as of the entry. The ledger needs them to
+                    # post the right cash and to know where this position dies;
+                    # config can change between now and the resolve that grades
+                    # it, and re-deriving them then would rewrite history.
+                    "leverage": round(s.leverage, 4),
+                    "margin_fraction": round(s.margin_fraction, 6),
+                    "liquidation_price": (
+                        None if s.liquidation_price is None else round(s.liquidation_price, 8)
+                    ),
                     "signal_entry": round(s.market_entry, 8),
                     "stop_loss": round(s.stop_loss, 8),
                     "take_profit_levels": [round(t, 8) for t in s.take_profit_levels],

@@ -616,9 +616,20 @@ function render() {
               : a > 0 ? Math.min(10, Math.max(4, 5 - Math.floor(Math.log10(a)))) : 4;
       return (+v).toFixed(d).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
     };
+    const byClass = orders.reduce((m, s) => {
+      const c = s.asset_class || "equity"; m[c] = (m[c] || 0) + 1; return m; }, {});
+    const classSplit = Object.keys(byClass).sort()
+      .map(c => `${byClass[c]} ${c}`).join(" + ");
+    const levered = orders.filter(s => (s.leverage || 1) > 1);
     $("#orders-meta").textContent =
       `scan ${scan.date} · regime ${scan.regime.regime} · ${orders.length} order${
-        orders.length === 1 ? "" : "s"} · sizes are % of account equity`;
+        orders.length === 1 ? "" : "s"}${classSplit ? ` (${classSplit})` : ""}` +
+      ` · size is notional as % of equity; margin is the cash it ties up` +
+      (levered.length
+        ? ` · ${levered.length} on margin — the risk column already includes the `
+          + `multiple, and liquidation is where the exchange closes the trade `
+          + `whether or not the stop has filled`
+        : "");
     if (!orders.length) {
       $("#orders-table").innerHTML = "";
       $("#orders-empty").innerHTML =
@@ -626,14 +637,24 @@ function render() {
          every candidate was refused for a stated reason (see the scanner table
          below). An empty list is a decision, not a missing feature.</div>`;
     } else {
-      $("#orders-empty").innerHTML = "";
+      // Totals the per-row numbers cannot show: what placing ALL of these
+      // would commit and risk at once.
+      const heat = scan.portfolio_heat_pct;
+      $("#orders-empty").innerHTML = heat == null ? "" :
+        `<div class="note">Placing all ${orders.length}: ` +
+        `<b>${(+scan.gross_notional_pct).toFixed(1)}%</b> of equity in notional, ` +
+        `<b>${(+scan.margin_required_pct).toFixed(1)}%</b> posted as margin, ` +
+        `<b>${(+heat).toFixed(2)}%</b> of equity at risk if every stop fills. ` +
+        `Reported, not enforced — size down or take fewer if that is more than you want on.</div>`;
       $("#orders-table").innerHTML = `
-        <tr><th>Symbol</th><th>Side</th><th>Setup</th><th class="num">Limit</th><th class="num">Market</th>
+        <tr><th>Symbol</th><th>Book</th><th>Side</th><th>Setup</th><th class="num">Limit</th><th class="num">Market</th>
             <th class="num">Entry zone</th><th class="num">Stop</th><th class="num">Targets (T1·T2·T3)</th>
-            <th class="num">Size</th><th class="num">Risk</th><th class="num">R:R</th>
+            <th class="num">Lev</th><th class="num">Liquidation</th>
+            <th class="num">Size</th><th class="num">Margin</th><th class="num">Risk</th><th class="num">R:R</th>
             <th class="num">P(hit)</th><th>Grade</th></tr>` +
         orders.map(s => `<tr>
           <td><b>${esc(s.symbol)}</b></td>
+          <td class="t2">${esc(s.asset_class || "equity")}</td>
           <td><span class="side ${s.side === "long" ? "buy" : "sell"}">${
             s.side === "long" ? "BUY" : "SELL"}</span></td>
           <td class="t2">${esc(srcLabel(s.source))}</td>
@@ -642,7 +663,10 @@ function render() {
           <td class="num px">${px(s.entry_zone[0])}–${px(s.entry_zone[1])}</td>
           <td class="num px stop">${px(s.stop_loss)}</td>
           <td class="num px tgt">${s.take_profit_levels.map(px).join(" · ")}</td>
+          <td class="num">${(s.leverage || 1) > 1 ? `<b>${(+s.leverage).toFixed(1)}x</b>` : "—"}</td>
+          <td class="num px stop">${s.liquidation_price == null ? "—" : px(s.liquidation_price)}</td>
           <td class="num">${fmtPct(s.position_size_fraction)}</td>
+          <td class="num">${fmtPct(s.margin_fraction ?? s.position_size_fraction)}</td>
           <td class="num">${s.risk_percentage.toFixed(2)}%</td>
           <td class="num">${s.risk_reward.toFixed(2)}</td>
           <td class="num">${(s.source || "model") === "model" ? fmtPct(s.probability) : "—"}</td>
@@ -666,7 +690,12 @@ function render() {
       k("Closed trades", acct.n_closed) +
       k("Open positions", acct.n_open) +
       k("Win rate", acct.win_rate == null ? "—" : fmtPct(acct.win_rate)) +
-      k("Profit factor", acct.profit_factor == null ? "—" : fmtNum(acct.profit_factor));
+      k("Profit factor", acct.profit_factor == null ? "—" : fmtNum(acct.profit_factor)) +
+      k("Margin posted", usd(acct.open_margin ?? 0)) +
+      k("Account leverage", acct.account_leverage == null ? "—"
+        : (+acct.account_leverage).toFixed(2) + "x / " +
+          (+(acct.max_account_leverage ?? 1)).toFixed(1) + "x cap") +
+      k("Liquidated", acct.n_liquidated ?? 0, (acct.n_liquidated || 0) > 0 ? "down" : "");
 
     const curve = acct.equity_curve || [];
     if (curve.length > 1) {
@@ -683,34 +712,44 @@ function render() {
     const open = acct.open_positions || [];
     $("#account-open").innerHTML = !open.length
       ? `<tr><td class="t2">No open positions.</td></tr>`
-      : `<tr><th>Symbol</th><th>Side</th><th>Opened</th><th class="num">Entry</th>
-             <th class="num">Notional</th><th class="num">Stop</th></tr>` +
+      : `<tr><th>Symbol</th><th>Book</th><th>Side</th><th>Opened</th><th class="num">Entry</th>
+             <th class="num">Notional</th><th class="num">Margin</th><th class="num">Lev</th>
+             <th class="num">Stop</th><th class="num">Liquidation</th></tr>` +
         open.map(p => `<tr><td><b>${esc(p.symbol)}</b></td>
+          <td class="t2">${esc(p.asset_class || "equity")}</td>
           <td><span class="side ${p.side === "long" ? "buy" : "sell"}">${
             p.side === "long" ? "BUY" : "SELL"}</span></td>
           <td>${esc(p.entry_date)}</td>
           <td class="num">${p.entry_price ? p.entry_price.toPrecision(6) : "—"}</td>
           <td class="num">${usd(p.notional)}</td>
+          <td class="num">${usd(p.margin ?? p.notional)}</td>
+          <td class="num">${(p.leverage || 1) > 1 ? `<b>${(+p.leverage).toFixed(1)}x</b>` : "—"}</td>
           <td class="num stop">${p.stop_loss == null ? "—" : p.stop_loss.toPrecision(6)}</td>
+          <td class="num stop">${p.liquidation_price == null ? "—" : p.liquidation_price.toPrecision(6)}</td>
         </tr>`).join("");
 
     const tr = acct.trades || [];
     $("#account-trades").innerHTML = !tr.length
       ? `<tr><td class="t2">No closed trades yet — the gate has not emitted a signal that has since resolved.</td></tr>`
-      : `<tr><th>Exit date</th><th>Symbol</th><th>Source</th><th>Opened</th><th>Why</th>
+      : `<tr><th>Exit date</th><th>Symbol</th><th>Book</th><th>Source</th><th>Opened</th><th>Why</th>
              <th class="num">Entry</th><th class="num">Exit</th><th class="num">Bars</th>
-             <th class="num">Notional</th><th class="num">Return</th>
-             <th class="num">P&L</th><th class="num">Equity after</th></tr>` +
+             <th class="num">Notional</th><th class="num">Lev</th><th class="num">Return</th>
+             <th class="num">On margin</th><th class="num">P&L</th><th class="num">Equity after</th></tr>` +
         tr.slice(0, 200).map(t => `<tr>
           <td>${esc(t.exit_date)}</td><td><b>${esc(t.symbol)}</b></td>
+          <td class="t2">${esc(t.asset_class || "equity")}</td>
           <td class="t2">${esc((t.source || "model").replace(/^technical:/, "").replace(/_/g, " "))}</td>
           <td class="t2">${esc(t.entry_date)}</td>
-          <td><span class="chip ${t.exit_reason === "tp" ? "a" : t.exit_reason === "sl" ? "rej" : "b"}">${esc(t.exit_reason)}</span></td>
+          <td><span class="chip ${t.exit_reason === "tp" ? "a"
+            : (t.exit_reason === "sl" || t.liquidated) ? "rej" : "b"}">${esc(t.exit_reason)}</span></td>
           <td class="num">${t.entry_price ? t.entry_price.toPrecision(6) : "—"}</td>
           <td class="num">${t.exit_price ? t.exit_price.toPrecision(6) : "—"}</td>
           <td class="num">${t.bars_held}</td>
           <td class="num">${usd(t.notional)}</td>
+          <td class="num">${(t.leverage || 1) > 1 ? `${(+t.leverage).toFixed(1)}x` : "—"}</td>
           <td class="num ${t.net_return >= 0 ? "pnl-up" : "pnl-dn"}">${fmtPct(t.net_return, 2)}</td>
+          <td class="num ${(t.return_on_margin ?? 0) >= 0 ? "pnl-up" : "pnl-dn"}">${
+            t.return_on_margin == null ? "—" : fmtPct(t.return_on_margin, 2)}</td>
           <td class="num ${t.pnl >= 0 ? "pnl-up" : "pnl-dn"}">${usd(t.pnl)}</td>
           <td class="num">${usd(t.equity_after)}</td>
         </tr>`).join("");
@@ -724,8 +763,15 @@ function render() {
         `${src.replace(/^technical:/, "").replace(/_/g, " ")}: ${b.n} trade(s), ` +
         `${b.pnl >= 0 ? "+" : ""}$${Math.abs(b.pnl).toLocaleString()}` +
         (b.win_rate == null ? "" : ` (${(100 * b.win_rate).toFixed(0)}% won)`)).join(" · ") + ".");
+    const byAsset = Object.entries(acct.by_asset_class || {});
+    if (byAsset.length > 1)
+      notes.push("By book — " + byAsset.map(([c, b]) =>
+        `${c}: ${b.n} trade(s), ${b.pnl >= 0 ? "+" : ""}$${Math.abs(b.pnl).toLocaleString()}` +
+        (b.win_rate == null ? "" : ` (${(100 * b.win_rate).toFixed(0)}% won)`)).join(" · ") + ".");
+    if (acct.n_liquidated)
+      notes.push(`${acct.n_liquidated} levered position(s) were liquidated — the loss is capped at the margin posted, which is the most a position can lose.`);
     if (acct.n_skipped_exposure)
-      notes.push(`${acct.n_skipped_exposure} signal(s) not taken: the account could not fund them within its gross-exposure cap.`);
+      notes.push(`${acct.n_skipped_exposure} signal(s) not taken: the account could not fund them within its gross-exposure or account-leverage cap.`);
     if (acct.n_legacy_unsized)
       notes.push(`${acct.n_legacy_unsized} prediction(s) logged before account tracking existed carry no size and are excluded.`);
     $("#account-note").textContent = notes.join(" ");

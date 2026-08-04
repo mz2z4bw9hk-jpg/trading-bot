@@ -324,7 +324,7 @@ structure instead:
 signals:
   technical:
     enabled: true
-    max_orders_per_scan: 5      # strongest-first, one order per symbol
+    max_orders_per_scan: 5      # per asset class, strongest-first
     min_risk_reward: 1.5        # measured to the second target
     setups: [donchian_breakout, pullback_in_uptrend, ma_cross,
              oversold_bounce, macd_momentum]
@@ -357,6 +357,107 @@ honest way to find out, and it costs simulated money rather than real money.
 Order cards from this engine show no `P(hit)`: there isn't one, and printing a
 number nothing computed would be worse than a dash.
 
+## 6d. Two books: how many orders, and from where
+
+Orders are ranked and capped **within each asset class**, not across all of
+them:
+
+```yaml
+scanner:
+  top_n: 10                     # fallback for classes not named below
+  orders_per_asset_class:
+    equity: 5
+    crypto: 5
+```
+
+This is not cosmetic. Crypto's daily volatility runs several times an equity's,
+so on one ranked list the coins take nearly every slot and the equity book is
+never traded. Ranking inside each class is what actually produces "the five
+best stocks and the five best crypto".
+
+Two rules govern what reaches the list:
+
+- **One order per symbol.** The model gate and the rule engine can fire on the
+  same name on the same bar. That is one idea, and shipping both tickets would
+  double the intended size. The model order wins the collision — it is the one
+  with out-of-sample evidence behind it.
+- **An empty book does not donate its slots.** Five crypto setups and no equity
+  ones means five orders, not ten. Backfilling would quietly double crypto
+  exposure on days the equity screen is silent.
+
+## 6e. Leverage (crypto perpetuals)
+
+Off by default. Turn it on per asset class:
+
+```yaml
+risk:
+  leverage:
+    max_leverage:
+      crypto: 3.0             # equities absent -> 1.0, cash
+    maintenance_margin_rate: 0.005
+    funding_bps_daily: 3.0    # ~0.01% per 8h, charged on notional
+    stop_buffer: 1.5          # liquidation must stay 1.5 stop-widths away
+    max_account_leverage: 2.0 # ceiling on summed notional / equity
+```
+
+**Leverage multiplies risk, not just size.** A position sized to lose 0.4% of
+equity at its stop loses 1.2% at 3x. There is no version of this where the
+notional triples and the loss does not. The `Risk` column on the order card,
+the paper ledger and the account KPIs all show the levered number, because that
+is the number that is true.
+
+`max_leverage` is a **ceiling, not a setting**. Each order solves for the
+largest multiple whose liquidation price stays `stop_buffer` stop-widths beyond
+its stop, and takes the smaller of that and the ceiling:
+
+> L ≤ 1 / (stop_buffer · stop_distance + maintenance_margin_rate)
+
+A 2% stop leaves that slack and gets the full 3x. A 25% stop resolves to ~2.6x
+on its own. A stop wide enough that no multiple is safe trades unlevered rather
+than being rejected. The consequence worth internalizing: **a wide-stop trade
+de-levers itself**, so leverage concentrates in exactly the tight-stop setups
+where it is survivable.
+
+The order card gains three columns — `Lev`, `Liquidation`, and `Margin`
+alongside `Size`. Size is notional as a percent of equity; margin is the cash it
+actually ties up (`notional / leverage`). Liquidation is where the exchange
+closes the trade whether or not the stop has filled; by construction it is
+always further out than the stop, and it is printed so that is visibly true
+rather than merely asserted.
+
+Funding is charged on notional for the expected hold and folded into
+`cost_estimate` **before** the EV gate, so a levered trade has to pay its own
+rent out of the move it predicts.
+
+In the paper account, two independent ceilings apply on entry, because leverage
+separates two things a cash account conflates. `backtest.max_gross_exposure`
+bounds the **cash** posted as margin — an account cannot fund what it does not
+have. `max_account_leverage` bounds the summed **notional** — an account that
+has funded ten 3x positions carries 30x of market exposure behind one balance,
+and no per-position limit can see that. Positions refused by either are
+reported, not dropped.
+
+Closed levered trades show `return_on_margin` next to the return on notional;
+on a levered trade the former is the number that matters. A position that
+reaches its liquidation level is posted as a total loss of its margin and
+labelled `liquidated` — the ledger will never show a loss larger than the cash
+a position had, which is the one thing raw notional arithmetic gets wrong.
+
+**The walk-forward backtest runs unlevered even when this is configured**, and
+says so in a warning at `titan validate`. Simulating margin through it properly
+needs intrabar liquidation and per-bar funding accrual; a half-modelled version
+would report returns the account could not have produced. So backtest Sharpe,
+CAGR and drawdown describe the cash strategy — the multiple shows up in live
+`titan scan` orders and in the paper account, which is where you should look
+for its effect.
+
+What is **not** modelled: cross margin (one position's loss eating another's
+collateral — it would let a single trade liquidate the whole book), short
+perpetuals (every setup here is long), tiered maintenance margin, and funding
+that varies with the basis. Equities stay at 1x unless you add them explicitly,
+because margin on a stock needs a broker agreement a config file has no
+business assuming exists.
+
 ## 7. Tuning the knobs that matter
 
 All in your YAML config (validated by pydantic — typos fail loudly):
@@ -367,6 +468,8 @@ All in your YAML config (validated by pydantic — typos fail loudly):
 | `signals.min_probability`, `ev_margin_bps` | how picky the gate is (fewer, better trades) |
 | `risk.target_annual_vol`, `risk_per_trade_pct`, `kelly_fraction` | aggressiveness; the minimum-of-three sizing keeps any one mistake bounded |
 | `risk.regime_multipliers` | risk appetite per regime (crash is 0 — think hard before changing) |
+| `risk.leverage.max_leverage` | margin per asset class; a ceiling, and it multiplies loss as well as size (§6e) |
+| `scanner.orders_per_asset_class` | how many orders each book gets, ranked within itself (§6d) |
 | `model.tuning_iterations`, `internal_folds`, `members` | compute vs. thoroughness |
 | `cv.n_folds`, `test_bars`, `min_train_bars` | how much out-of-sample history judges the model |
 | `backtest.costs.*` | be honest; sweep 2×–4× per VALIDATION §3 |

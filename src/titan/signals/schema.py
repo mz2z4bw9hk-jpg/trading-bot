@@ -26,6 +26,10 @@ class Signal:
     # sources carry very different evidence and must stay distinguishable
     # everywhere downstream — ledger, dashboard and paper account included.
     source: str = "model"
+    # Which book this order belongs to. Orders are ranked and quota'd within a
+    # class, and leverage is granted per class, so this has to travel with the
+    # signal rather than be looked up again downstream.
+    asset_class: str = "equity"
 
     # probability & confidence -------------------------------------------
     probability: float = 0.0          # calibrated P(tp before stop)
@@ -52,8 +56,19 @@ class Signal:
     take_profit_levels: list[float] = field(default_factory=list)
 
     # sizing / risk ----------------------------------------------------------
-    position_size_fraction: float = 0.0
+    position_size_fraction: float = 0.0   # NOTIONAL as a fraction of equity
     risk_percentage: float = 0.0      # equity at risk if stopped, in %
+    # Margin trading. At 1.0 the position is spot: margin equals notional and
+    # there is no liquidation level. Above it, ``position_size_fraction`` is
+    # levered notional, ``margin_fraction`` is the cash actually posted, and
+    # ``risk_percentage`` is computed on the notional — so it already carries
+    # the multiple. Liquidation is where the exchange closes the trade whether
+    # or not the stop has filled; it is always further out than the stop by
+    # construction, and it is on the order card so that is visibly true.
+    leverage: float = 1.0
+    margin_fraction: float = 0.0
+    liquidation_price: float | None = None
+    funding_cost: float = 0.0         # fraction of notional over the expected hold
     expected_holding_bars: float = 0.0
     expected_volatility: float = 0.0  # over holding horizon, fraction
     mae_estimate: float = 0.0         # typical adverse excursion (fraction)
@@ -81,6 +96,7 @@ class Signal:
             "side": self.side.value,
             "model_version": self.model_version,
             "source": self.source,
+            "asset_class": self.asset_class,
             "probability": round(self.probability, 4),
             "probability_low": None if self.probability_low is None else round(self.probability_low, 4),
             "probability_high": None if self.probability_high is None else round(self.probability_high, 4),
@@ -101,6 +117,12 @@ class Signal:
             "take_profit_levels": [round(p, 4) for p in self.take_profit_levels],
             "position_size_fraction": round(self.position_size_fraction, 4),
             "risk_percentage": round(self.risk_percentage, 3),
+            "leverage": round(self.leverage, 2),
+            "margin_fraction": round(self.margin_fraction, 4),
+            "liquidation_price": (
+                None if self.liquidation_price is None else round(self.liquidation_price, 8)
+            ),
+            "funding_cost": round(self.funding_cost, 6),
             "expected_holding_bars": round(self.expected_holding_bars, 1),
             "expected_volatility": round(self.expected_volatility, 4),
             "mae_estimate": round(self.mae_estimate, 4),

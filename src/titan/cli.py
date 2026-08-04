@@ -69,6 +69,19 @@ def cmd_validate(args: argparse.Namespace) -> int:
     out_dir = Path(args.out or cfg.run.artifacts_dir)
 
     logger.info("TITAN validate: provider=%s seed=%d", cfg.data.provider, cfg.run.seed)
+    if cfg.risk.leverage.max_leverage:
+        # Stated once, loudly, rather than left for someone to infer from a
+        # Sharpe that looks lower than the live book's. The walk-forward is the
+        # evidence base for the MODEL; simulating margin through it would need
+        # intrabar liquidation and per-bar funding, and a half-modelled version
+        # would report returns the account could not have produced.
+        logger.warning(
+            "risk.leverage is configured (%s) but the walk-forward runs UNLEVERED. "
+            "Backtest Sharpe, CAGR and drawdown below describe the cash strategy; "
+            "live orders from `titan scan` carry the multiple and the paper "
+            "account is where its effect shows up.",
+            ", ".join(f"{k}={v}x" for k, v in sorted(cfg.risk.leverage.max_leverage.items())),
+        )
     dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
     builder = FeatureMatrixBuilder(cfg.features)
     panel = builder.build(dataset)
@@ -226,6 +239,7 @@ def _write_account_artifact(cfg: TitanConfig, out_dir: Path) -> dict:
         store.records,
         starting_equity=cfg.monitor.paper_starting_equity,
         max_gross_exposure=cfg.backtest.max_gross_exposure,
+        max_account_leverage=cfg.risk.leverage.max_account_leverage,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "account.json").write_text(json.dumps(state, indent=1, default=str))
@@ -298,11 +312,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "open_positions": account["n_open"],
         "regime": scan.regime.regime.value,
         "n_signals": len(scan.signals),
+        "orders_by_asset_class": {
+            k: len(v) for k, v in sorted(scan.signals_by_asset_class().items())
+        },
         "newly_tracked": n_tracked,
         "top": [
-            {"symbol": s.symbol, "grade": s.trade_grade.value,
+            {"symbol": s.symbol, "asset_class": s.asset_class,
+             "grade": s.trade_grade.value, "leverage": round(s.leverage, 2),
              "confidence": round(s.confidence_score, 1)}
-            for s in scan.signals[:5]
+            for s in scan.signals[:10]
         ],
         "artifacts": str(out.resolve()),
     }, indent=1))

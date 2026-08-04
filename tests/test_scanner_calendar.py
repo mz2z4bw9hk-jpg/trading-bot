@@ -88,10 +88,21 @@ def _mixed_calendar_panel() -> tuple[FeaturePanel, dict]:
 
 class _StubDataset:
     def __init__(self, frames):
+        from titan.core.types import AssetClass, Instrument, Universe
+
         self.frames = frames
         self.reliability = dict.fromkeys(frames, 1.0)
         longest = max(frames.values(), key=len)
         self.benchmark_frame = longest
+        self.universe = Universe(
+            instruments=[
+                Instrument(
+                    symbol=s,
+                    asset_class=AssetClass.CRYPTO if s.endswith("-USD") else AssetClass.EQUITY,
+                )
+                for s in frames
+            ]
+        )
 
 
 def _scan(max_staleness_bars: int = 5):

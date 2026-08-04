@@ -184,6 +184,32 @@ INTRADAY_TIMEFRAMES: frozenset[str] = frozenset(
 )
 
 
+# Wall-clock duration of one bar, in hours. Distinct from bars-per-year, which
+# is a *calendar* quantity: 252 daily equity bars span a year of sessions, but
+# one of those bars still covers a day. Anything that accrues in real time
+# rather than in bars — perpetual-futures funding, most obviously — has to
+# convert through this table and not through the annualization constant.
+_TIMEFRAME_HOURS: dict[str, float] = {
+    "1wk": 168.0,
+    "1d": 24.0,
+    "4h": 4.0,
+    "3h": 3.0,
+    "2h": 2.0,
+    "1h": 1.0,
+    "30m": 0.5,
+    "15m": 0.25,
+    "5m": 5.0 / 60.0,
+    "1m": 1.0 / 60.0,
+}
+
+
+def timeframe_hours(timeframe: str) -> float:
+    """Hours of wall-clock time spanned by one bar."""
+    if timeframe not in _TIMEFRAME_HOURS:
+        raise ValueError(f"unknown timeframe {timeframe!r}")
+    return _TIMEFRAME_HOURS[timeframe]
+
+
 # Ordering from coarsest to finest, for validating that a resample source
 # is genuinely finer than its target.
 _ORDER: tuple[str, ...] = (
