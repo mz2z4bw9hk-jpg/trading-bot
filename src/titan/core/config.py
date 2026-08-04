@@ -197,6 +197,36 @@ class RiskConfig(BaseModel):
     )
 
 
+class TechnicalConfig(BaseModel):
+    """Rule-based swing setups: a second order source, off by default.
+
+    These bypass the calibrated EV gate by construction — they are a different
+    hypothesis, not a better-tuned version of the same one — so they are opt-in
+    and every order they produce is labelled with the rule that fired.
+    """
+
+    enabled: bool = False
+    setups: list[str] = Field(
+        default_factory=lambda: [
+            "donchian_breakout",
+            "pullback_in_uptrend",
+            "ma_cross",
+            "oversold_bounce",
+            "macd_momentum",
+        ]
+    )
+    # Cap on technical orders per scan, taken strongest-first. Without a cap a
+    # 178-name universe can fire dozens on a trending day and the account would
+    # be fully committed to one day's worth of setups.
+    max_orders_per_scan: int = Field(5, ge=1)
+    # A rule that pays less at its second target than it risks at its stop is
+    # not a trade, however cleanly the pattern printed.
+    min_risk_reward: float = Field(1.5, gt=0)
+    # Rules do not read the regime detector, but the platform still refuses to
+    # buy breakouts into a crash.
+    skip_in_crash: bool = True
+
+
 class SignalConfig(BaseModel):
     min_probability: float = Field(0.55, gt=0.5, lt=1.0)
     ev_margin_bps: float = Field(5.0, ge=0)
@@ -209,6 +239,7 @@ class SignalConfig(BaseModel):
     grade_thresholds: dict[str, float] = Field(
         default_factory=lambda: {"A+": 85.0, "A": 75.0, "B+": 65.0, "B": 55.0}
     )
+    technical: TechnicalConfig = Field(default_factory=TechnicalConfig)
 
 
 class ScannerConfig(BaseModel):

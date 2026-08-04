@@ -83,6 +83,7 @@ class PaperTrackingStore:
                     # forward ledger can price it in dollars later. Recorded at
                     # log time because the signal object is gone by resolve.
                     "side": s.side.value,
+                    "source": s.source,
                     "size_fraction": round(s.position_size_fraction, 6),
                     "risk_percentage": round(s.risk_percentage, 4),
                     "cost_estimate": round(s.cost_estimate, 6),

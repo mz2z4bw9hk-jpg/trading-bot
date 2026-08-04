@@ -43,6 +43,7 @@ class LedgerRow:
 
     symbol: str
     side: str
+    source: str
     entry_date: str
     exit_date: str
     entry_price: float
@@ -60,6 +61,7 @@ class LedgerRow:
         return {
             "symbol": self.symbol,
             "side": self.side,
+            "source": self.source,
             "entry_date": self.entry_date,
             "exit_date": self.exit_date,
             "entry_price": round(self.entry_price, 8),
@@ -79,6 +81,7 @@ class LedgerRow:
 class OpenPosition:
     symbol: str
     side: str
+    source: str
     entry_date: str
     entry_price: float
     notional: float
@@ -89,6 +92,7 @@ class OpenPosition:
         return {
             "symbol": self.symbol,
             "side": self.side,
+            "source": self.source,
             "entry_date": self.entry_date,
             "entry_price": round(self.entry_price, 8),
             "notional": round(self.notional, 2),
@@ -149,6 +153,7 @@ def replay(
             live[key] = OpenPosition(
                 symbol=rec["symbol"],
                 side=rec.get("side", "long"),
+                source=str(rec.get("source") or "model"),
                 entry_date=rec["date"],
                 # The realized fill is only known once the trade resolves; until
                 # then the signal's own expected entry is what the position was
@@ -172,7 +177,7 @@ def replay(
             max_drawdown = min(max_drawdown, equity / peak - 1.0)
             exit_price = float(rec.get("exit_price") or 0.0)
             ledger.append(LedgerRow(
-                symbol=pos.symbol, side=pos.side,
+                symbol=pos.symbol, side=pos.side, source=pos.source,
                 entry_date=pos.entry_date, exit_date=date,
                 entry_price=pos.entry_price, exit_price=exit_price,
                 exit_reason=str(rec.get("touch") or "?"),
@@ -181,6 +186,18 @@ def replay(
                 net_return=net_ret, pnl=pnl, equity_after=equity,
             ))
             equity_curve.append((date, equity))
+
+    # Which engine actually earned: the whole reason technical orders are
+    # labelled rather than merged into one undifferentiated stream.
+    by_source: dict[str, dict[str, Any]] = {}
+    for row in ledger:
+        b = by_source.setdefault(row.source, {"n": 0, "pnl": 0.0, "wins": 0})
+        b["n"] += 1
+        b["pnl"] += row.pnl
+        b["wins"] += 1 if row.pnl > 0 else 0
+    for b in by_source.values():
+        b["pnl"] = round(b["pnl"], 2)
+        b["win_rate"] = round(b["wins"] / b["n"], 4) if b["n"] else None
 
     wins = [r for r in ledger if r.pnl > 0]
     losses = [r for r in ledger if r.pnl <= 0]
@@ -206,6 +223,7 @@ def replay(
         "avg_win": round(sum(r.net_return for r in wins) / len(wins), 5) if wins else None,
         "avg_loss": round(sum(r.net_return for r in losses) / len(losses), 5) if losses else None,
         "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss > 0 else None,
+        "by_source": by_source,
         "n_legacy_unsized": legacy,
         "n_skipped_exposure": len(skipped),
         "skipped": skipped[-20:],

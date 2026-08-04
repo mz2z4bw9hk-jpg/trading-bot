@@ -197,7 +197,35 @@ class MarketScanner:
                 status=f"stale: last bar {own_date[sym].date()} ({lag[sym]} bars behind)",
             ))
 
-        rows.sort(key=lambda r: (r.status != "signal", -r.confidence, -r.probability))
+        # ---- second order source: rule-based swing setups ----------------
+        # These do not consult the model. They fire on price structure and are
+        # labelled with the rule that produced them, so the ledger can later
+        # say whether the rules or the model made the money.
+        tech_cfg = self._cfg.signals.technical
+        n_tech = 0
+        if tech_cfg.enabled and not (
+            tech_cfg.skip_in_crash and snapshot.regime is Regime.CRASH
+        ):
+            tech_signals = self._technical_signals(dataset, fresh, own_date, snapshot)
+            n_tech = len(tech_signals)
+            signals.extend(tech_signals)
+            emitted = {s.symbol for s in tech_signals}
+            for row in rows:
+                if row.symbol in emitted and row.status != "signal":
+                    setup = next(
+                        s.source.split(":", 1)[1]
+                        for s in tech_signals if s.symbol == row.symbol
+                    )
+                    row.status = f"signal ({setup})"
+                    row.grade = next(
+                        s.trade_grade.value for s in tech_signals if s.symbol == row.symbol
+                    )
+                    row.confidence = next(
+                        s.confidence_score for s in tech_signals if s.symbol == row.symbol
+                    )
+
+        rows.sort(key=lambda r: (not r.status.startswith("signal"),
+                                 -r.confidence, -r.probability))
         for rank, row in enumerate(rows, start=1):
             row.rank = rank
         signals.sort(key=lambda s: -s.confidence_score)
@@ -207,8 +235,55 @@ class MarketScanner:
         )
         logger.info(
             "scan %s: %d instruments (%d ranked, %d stale), %d actionable signals "
-            "(regime=%s)",
+            "(%d model, %d technical) (regime=%s)",
             last_date.date(), len(rows), len(fresh), len(stale), len(signals),
-            snapshot.regime.value,
+            len(signals) - n_tech, n_tech, snapshot.regime.value,
         )
         return result
+
+    # ------------------------------------------------------------------ #
+
+    def _technical_signals(self, dataset, symbols, own_date, snapshot) -> list[Signal]:
+        """Fire the rule set over each instrument's own freshest bar.
+
+        Ranked by setup strength and capped, because a trending day fires
+        dozens across a large universe and an account that took them all would
+        be fully committed to a single day's worth of patterns.
+        """
+        from titan.signals.technical import detect, to_signal
+
+        cfg = self._cfg.signals.technical
+        candidates: list[tuple[float, Signal]] = []
+        for sym in symbols:
+            frame = dataset.frames.get(str(sym))
+            if frame is None:
+                continue
+            window = frame.loc[: own_date[sym]]
+            for setup in detect(window, cfg.setups, min_risk_reward=cfg.min_risk_reward):
+                signal = to_signal(
+                    setup,
+                    symbol=str(sym),
+                    date=own_date[sym],
+                    frame=window,
+                    risk_cfg=self._cfg.risk,
+                    cost_model=self._generator._costs,
+                    regime=snapshot.regime,
+                    vol_state=snapshot.vol_state,
+                    regime_confidence=snapshot.confidence,
+                    reliability=float(dataset.reliability.get(str(sym), 1.0)),
+                )
+                if signal is not None:
+                    candidates.append((setup.strength, signal))
+
+        candidates.sort(key=lambda c: -c[0])
+        # One order per symbol: two rules firing on the same name is one idea.
+        seen: set[str] = set()
+        out: list[Signal] = []
+        for _, signal in candidates:
+            if signal.symbol in seen:
+                continue
+            seen.add(signal.symbol)
+            out.append(signal)
+            if len(out) >= cfg.max_orders_per_scan:
+                break
+        return out

@@ -313,6 +313,50 @@ depth, order-flow imbalance — that OHLCV bars simply do not contain. Honest
 scalping research needs order-book data and fills calibrated to your broker,
 not a smaller bar.
 
+## 6c. The second order source: rule-based swing setups
+
+The calibrated gate emits nothing when the model has no edge to defend — which
+is the correct answer, and on a universe scoring AUC ~0.51 it is the answer
+every day. `signals.technical` is a separate engine that fires on price
+structure instead:
+
+```yaml
+signals:
+  technical:
+    enabled: true
+    max_orders_per_scan: 5      # strongest-first, one order per symbol
+    min_risk_reward: 1.5        # measured to the second target
+    setups: [donchian_breakout, pullback_in_uptrend, ma_cross,
+             oversold_bounce, macd_momentum]
+```
+
+| Setup | Fires when |
+|---|---|
+| `donchian_breakout` | close at a new 20-bar high on >1.2x average volume |
+| `pullback_in_uptrend` | close > rising 50MA > 200MA, back within 1 ATR of the 20MA, turning up |
+| `ma_cross` | 20MA crosses above the 50MA with price over the 200MA |
+| `oversold_bounce` | RSI(2) < 10 while price holds above the 200MA |
+| `macd_momentum` | MACD crosses its signal above zero, in an uptrend |
+
+Stops come from structure (the swing low, or an ATR multiple — whichever is
+further), and targets are 1R/2R/3R of that stop distance, so reward is always
+measured against the risk actually taken. Sizing is fixed-fractional off the
+stop (`risk.risk_per_trade_pct`), scaled by the regime multiplier — a crash
+still zeroes the size. There is no Kelly term, because Kelly needs a
+probability and a rule does not produce one.
+
+**These are not validated alpha, and the platform does not pretend otherwise.**
+The walk-forward, the Venn-ABERS bands and the deflated Sharpe apply to the
+model, not to a rule fired on a chart. A breakout setup here has a definition,
+not out-of-sample evidence. Every technical order is labelled with the rule
+that produced it, in the orders table, the scanner status and the account
+ledger, and the paper account reports P&L **by source** — so after enough
+trades the ledger tells you whether the rules or the model earned. That is the
+honest way to find out, and it costs simulated money rather than real money.
+
+Order cards from this engine show no `P(hit)`: there isn't one, and printing a
+number nothing computed would be worse than a dash.
+
 ## 7. Tuning the knobs that matter
 
 All in your YAML config (validated by pydantic — typos fail loudly):

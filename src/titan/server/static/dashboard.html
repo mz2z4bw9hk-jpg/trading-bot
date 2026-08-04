@@ -602,6 +602,10 @@ function render() {
        decimals for sub-dollar instruments, where 2dp would round a stop into
        the entry. */
     const orders = scan.signals || [];
+    // "technical:donchian_breakout" -> "donchian breakout"; the model gate
+    // stays "model gate" so a glance separates the two engines.
+    const srcLabel = src => !src || src === "model" ? "model gate"
+      : src.replace(/^technical:/, "").replace(/_/g, " ");
     // Significant figures, not fixed decimals: a sub-penny token's entry, stop
     // and three targets all round to the same 0.000023 at 6dp, which is an
     // order ticket you cannot act on.
@@ -624,7 +628,7 @@ function render() {
     } else {
       $("#orders-empty").innerHTML = "";
       $("#orders-table").innerHTML = `
-        <tr><th>Symbol</th><th>Side</th><th class="num">Limit</th><th class="num">Market</th>
+        <tr><th>Symbol</th><th>Side</th><th>Setup</th><th class="num">Limit</th><th class="num">Market</th>
             <th class="num">Entry zone</th><th class="num">Stop</th><th class="num">Targets (T1·T2·T3)</th>
             <th class="num">Size</th><th class="num">Risk</th><th class="num">R:R</th>
             <th class="num">P(hit)</th><th>Grade</th></tr>` +
@@ -632,6 +636,7 @@ function render() {
           <td><b>${esc(s.symbol)}</b></td>
           <td><span class="side ${s.side === "long" ? "buy" : "sell"}">${
             s.side === "long" ? "BUY" : "SELL"}</span></td>
+          <td class="t2">${esc(srcLabel(s.source))}</td>
           <td class="num px">${px(s.optimal_limit_entry)}</td>
           <td class="num px">${px(s.market_entry)}</td>
           <td class="num px">${px(s.entry_zone[0])}–${px(s.entry_zone[1])}</td>
@@ -640,7 +645,7 @@ function render() {
           <td class="num">${fmtPct(s.position_size_fraction)}</td>
           <td class="num">${s.risk_percentage.toFixed(2)}%</td>
           <td class="num">${s.risk_reward.toFixed(2)}</td>
-          <td class="num">${fmtPct(s.probability)}</td>
+          <td class="num">${(s.source || "model") === "model" ? fmtPct(s.probability) : "—"}</td>
           <td><span class="chip ${gradeCls(s.trade_grade)}">${esc(s.trade_grade)}</span></td>
         </tr>`).join("");
     }
@@ -692,12 +697,13 @@ function render() {
     const tr = acct.trades || [];
     $("#account-trades").innerHTML = !tr.length
       ? `<tr><td class="t2">No closed trades yet — the gate has not emitted a signal that has since resolved.</td></tr>`
-      : `<tr><th>Exit date</th><th>Symbol</th><th>Opened</th><th>Why</th>
+      : `<tr><th>Exit date</th><th>Symbol</th><th>Source</th><th>Opened</th><th>Why</th>
              <th class="num">Entry</th><th class="num">Exit</th><th class="num">Bars</th>
              <th class="num">Notional</th><th class="num">Return</th>
              <th class="num">P&L</th><th class="num">Equity after</th></tr>` +
         tr.slice(0, 200).map(t => `<tr>
           <td>${esc(t.exit_date)}</td><td><b>${esc(t.symbol)}</b></td>
+          <td class="t2">${esc((t.source || "model").replace(/^technical:/, "").replace(/_/g, " "))}</td>
           <td class="t2">${esc(t.entry_date)}</td>
           <td><span class="chip ${t.exit_reason === "tp" ? "a" : t.exit_reason === "sl" ? "rej" : "b"}">${esc(t.exit_reason)}</span></td>
           <td class="num">${t.entry_price ? t.entry_price.toPrecision(6) : "—"}</td>
@@ -712,6 +718,12 @@ function render() {
     const notes = [
       "Signals are sized as the risk engine sized them when emitted; returns are net of the round-trip cost each signal priced in.",
     ];
+    const bySrc = Object.entries(acct.by_source || {});
+    if (bySrc.length)
+      notes.push("By source — " + bySrc.map(([src, b]) =>
+        `${src.replace(/^technical:/, "").replace(/_/g, " ")}: ${b.n} trade(s), ` +
+        `${b.pnl >= 0 ? "+" : ""}$${Math.abs(b.pnl).toLocaleString()}` +
+        (b.win_rate == null ? "" : ` (${(100 * b.win_rate).toFixed(0)}% won)`)).join(" · ") + ".");
     if (acct.n_skipped_exposure)
       notes.push(`${acct.n_skipped_exposure} signal(s) not taken: the account could not fund them within its gross-exposure cap.`);
     if (acct.n_legacy_unsized)

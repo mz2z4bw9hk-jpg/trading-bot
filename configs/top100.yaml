@@ -255,6 +255,16 @@ backtest:
     spread_bps: 3.0
     impact_coefficient: 0.10
 
+signals:
+  # Rule-based swing setups as a SECOND order source. The calibrated gate above
+  # emits only when the model has an edge it can defend; these fire on price
+  # structure instead and are labelled with the rule that produced them, so the
+  # paper account can tell you which source actually made money.
+  technical:
+    enabled: true
+    max_orders_per_scan: 5
+    min_risk_reward: 1.5
+
 risk:
   target_annual_vol: 0.10
   risk_per_trade_pct: 0.4

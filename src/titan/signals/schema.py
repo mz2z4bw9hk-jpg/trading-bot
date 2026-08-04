@@ -21,6 +21,11 @@ class Signal:
     date: pd.Timestamp
     side: Side
     model_version: str = ""
+    # Which engine produced this order: "model" for the calibrated gate, or
+    # "technical:<setup>" for a rule-based swing setup. Orders from the two
+    # sources carry very different evidence and must stay distinguishable
+    # everywhere downstream — ledger, dashboard and paper account included.
+    source: str = "model"
 
     # probability & confidence -------------------------------------------
     probability: float = 0.0          # calibrated P(tp before stop)
@@ -75,6 +80,7 @@ class Signal:
             "date": str(self.date.date()),
             "side": self.side.value,
             "model_version": self.model_version,
+            "source": self.source,
             "probability": round(self.probability, 4),
             "probability_low": None if self.probability_low is None else round(self.probability_low, 4),
             "probability_high": None if self.probability_high is None else round(self.probability_high, 4),
