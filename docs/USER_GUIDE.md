@@ -506,13 +506,59 @@ at that moment, netting the round-trip cost the signal itself priced in.
 Equity compounds as trades close.
 
 It is deliberately NOT a second risk engine. Sizes are taken as emitted; the
-only portfolio rule re-applied is `backtest.max_gross_exposure`, because an
-account that cannot fund a position does not take it and silently levering
-past 100% would make the curve fiction. Signals refused for that reason are
-counted and shown, not dropped.
+only portfolio rules re-applied are `backtest.max_gross_exposure` and
+`risk.leverage.max_account_leverage`, because an account that cannot fund a
+position does not take it and silently levering past its cap would make the
+curve fiction. Signals refused for that reason are counted and shown, not
+dropped.
 
 An empty ledger is the expected state until the gate emits something that has
 since resolved — it is not a broken panel.
+
+#### Marked to market: two balances, not one
+
+Open positions are valued at the latest bar, so the account moves every day —
+not only on the days something closes. It reports two figures, the way a broker
+separates cash from net liquidation value:
+
+| Figure | What it is |
+|---|---|
+| **Cash (realized)** | banked by closed trades. This is what sizes new positions |
+| **Unrealized P&L** | floating P&L of everything still open, net of the round trip it still owes |
+| **Account value** | cash + unrealized. What the account is worth right now |
+
+**Only cash compounds into sizing.** Sizing off account value would turn a
+paper gain into real exposure — the next position gets bigger because an
+earlier one happens to be winning on screen, which is leverage nobody asked
+for.
+
+A position opened today shows a small loss immediately. That is not a bug: it
+is charged the round trip it will owe to get out, which is what you are down if
+you close it now.
+
+The marked view also corrects a number the realized-only view understates.
+`max_drawdown` counts closed trades; `max_marked_drawdown` counts the open book
+too. On a run of mine the two read −26.6% and −34.1% — the open losers were
+real, they just had not been booked yet.
+
+Open-position rows show mark price, move since entry, unrealized dollars,
+return **on margin** (the number that matters on a levered position), and
+distance to both stop and liquidation. They are sorted worst floating loss
+first, because that is what you want at the top of an open book.
+
+**Liquidation is checked against the price path, not the outcome.** A levered
+position whose low reached its liquidation level was closed by the exchange on
+the way, whatever barrier the tracking log later grades it against — so the
+replay realizes it there. A dip through liquidation that recovered still counts;
+an account that only looked at where price ended up would report it as a live
+winner.
+
+The dashboard re-reads the artifacts every 30 seconds, pausing while the tab is
+hidden and refreshing immediately on return. A failed fetch keeps the last good
+render rather than blanking a panel. Marking needs prices: `titan scan` and
+`titan track resolve` already have a dataset loaded and pass it; `titan account`
+loads one for the same reason, and `--no-marks` skips it for a realized-only
+view.
 
 On a CUSUM alarm: run `validate` to produce a challenger; let the promotion
 gate decide. Never hand-promote.

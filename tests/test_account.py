@@ -317,3 +317,192 @@ def test_records_without_leverage_fields_replay_as_cash():
     assert row["leverage"] == 1.0
     assert row["margin"] == row["notional"]
     assert state["n_liquidated"] == 0
+
+
+# ------------------------------------------------------ mark to market ----
+
+
+def _frame(closes, *, start="2024-01-02", lows=None, highs=None):
+    import numpy as np
+    import pandas as pd
+
+    closes = np.asarray(closes, dtype=float)
+    idx = pd.DatetimeIndex(pd.bdate_range(start, periods=len(closes)), tz="UTC")
+    return pd.DataFrame(
+        {
+            "open": closes,
+            "high": closes * 1.001 if highs is None else np.asarray(highs, float),
+            "low": closes * 0.999 if lows is None else np.asarray(lows, float),
+            "close": closes,
+            "volume": np.full(len(closes), 1e6),
+        },
+        index=idx,
+    )
+
+
+def test_an_open_position_moves_the_balance_without_closing():
+    """The whole point: equity that only changes on close is a stale number."""
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=0.10)
+    frames = {"AAA": _frame([100.0, 105.0, 110.0])}   # +10% and still open
+
+    state = replay([rec], frames=frames)
+
+    assert state["n_closed"] == 0
+    assert state["equity"] == 1_000_000.0          # cash has not moved
+    assert state["account_value"] > 1_000_000.0    # but the account is worth more
+    assert state["unrealized_pnl"] == pytest.approx(100_000 * 0.10, abs=1.0)
+    assert state["mark_date"] == "2024-01-04"
+
+
+def test_cash_and_account_value_are_reported_separately():
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=0.10)
+    state = replay([rec], frames={"AAA": _frame([100.0, 90.0])})
+
+    assert state["equity"] == 1_000_000.0
+    assert state["account_value"] == pytest.approx(990_000.0, abs=1.0)
+    assert state["unrealized_pnl"] == pytest.approx(-10_000.0, abs=1.0)
+    assert state["marked_return"] < 0 < state["equity"]
+
+
+def test_sizing_still_uses_cash_not_the_marked_value():
+    """A gain that has not been realized must not inflate the next position.
+
+    Sizing off account value would compound paper profits into real exposure —
+    the position gets bigger because an earlier one is winning on screen, which
+    is leverage nobody asked for.
+    """
+    open_winner = _record(symbol="AAA", date="2024-01-02", outcome=None,
+                          exit_date=None, entry_price=100.0, size=0.10)
+    later = _record(symbol="BBB", date="2024-01-04", outcome=None,
+                    exit_date=None, entry_price=50.0, size=0.10)
+    frames = {"AAA": _frame([100.0, 150.0, 200.0]), "BBB": _frame([50.0, 50.0, 50.0])}
+
+    state = replay([open_winner, later], frames=frames)
+    bbb = next(p for p in state["open_positions"] if p["symbol"] == "BBB")
+
+    assert bbb["notional"] == pytest.approx(100_000.0)   # 10% of CASH, not of value
+
+
+def test_the_unrealized_figure_is_net_of_the_round_trip_still_owed():
+    """What the position is worth if closed now — costs included."""
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=0.10, cost=0.002)
+    flat = replay([rec], frames={"AAA": _frame([100.0, 100.0])})
+
+    # Price unchanged, so the only P&L is the cost of getting out.
+    assert flat["unrealized_pnl"] == pytest.approx(-100_000 * 0.002, abs=0.5)
+
+
+def test_the_equity_curve_gains_a_point_per_day_once_marked():
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=0.10)
+    frames = {"AAA": _frame([100.0, 101.0, 102.0, 103.0, 104.0])}
+
+    curve = replay([rec], frames=frames)["equity_curve"]
+
+    assert [p["date"] for p in curve] == [
+        "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"]
+    assert all("cash" in p and "unrealized" in p for p in curve)
+    assert curve[-1]["equity"] > curve[0]["equity"]
+    assert all(p["cash"] == 1_000_000.0 for p in curve)   # nothing closed
+
+
+def test_without_frames_the_replay_is_realized_only_exactly_as_before():
+    rec = _record(outcome=None, exit_date=None, size=0.10)
+    state = replay([rec])
+
+    assert state["mark_date"] is None
+    assert state["account_value"] == state["equity"] == 1_000_000.0
+    assert state["unrealized_pnl"] == 0.0
+    assert state["open_positions"][0]["mark_price"] is None
+
+
+def test_an_open_position_reports_its_distance_to_stop_and_liquidation():
+    rec = _levered(leverage=3.0, entry_price=100.0, size=0.30,
+                   outcome=None, exit_date=None)
+    state = replay([rec], frames={"AAA": _frame([100.0, 104.0])})
+    pos = state["open_positions"][0]
+
+    assert pos["mark_price"] == pytest.approx(104.0)
+    assert pos["price_return"] == pytest.approx(0.04)
+    # 3x on a +4% move is +12% on the margin, less the round trip.
+    assert pos["return_on_margin"] == pytest.approx(0.12, abs=0.01)
+    assert pos["distance_to_stop"] > 0
+    assert pos["distance_to_liquidation"] > 0
+
+
+def test_a_levered_position_that_touches_liquidation_is_closed_at_that_price():
+    """The tracking log cannot know this — only the price path can.
+
+    Liquidation is checked against the LOW, not the close, because that is
+    where the exchange acts. A position that dipped through and recovered was
+    still closed on the way.
+    """
+    rec = _levered(leverage=3.0, entry_price=100.0, size=0.30,
+                   outcome=None, exit_date=None)
+    # Closes never breach; the second day's LOW does (liq sits at ~66.7).
+    frames = {"AAA": _frame([100.0, 95.0, 99.0], lows=[99.9, 60.0, 98.9])}
+
+    state = replay([rec], frames=frames)
+
+    assert state["n_open"] == 0
+    assert state["n_liquidated"] == 1
+    assert state["trades"][0]["exit_reason"] == "liquidated"
+    assert state["realized_pnl"] == pytest.approx(-100_000.0, abs=0.01)
+
+
+def test_a_dip_that_stops_short_of_liquidation_leaves_the_position_open():
+    rec = _levered(leverage=3.0, entry_price=100.0, size=0.30,
+                   outcome=None, exit_date=None)
+    frames = {"AAA": _frame([100.0, 95.0, 99.0], lows=[99.9, 70.0, 98.9])}
+
+    state = replay([rec], frames=frames)
+
+    assert state["n_open"] == 1
+    assert state["n_liquidated"] == 0
+
+
+def test_an_unlevered_position_is_never_force_closed_by_the_path():
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=0.30)
+    frames = {"AAA": _frame([100.0, 20.0], lows=[99.9, 1.0])}
+
+    state = replay([rec], frames=frames)
+    assert state["n_open"] == 1 and state["n_liquidated"] == 0
+
+
+def test_the_entry_bar_low_cannot_liquidate_the_position_it_opened():
+    """Entry is at that bar's close; its low happened before the fill."""
+    rec = _levered(leverage=3.0, entry_price=100.0, size=0.30,
+                   outcome=None, exit_date=None)
+    frames = {"AAA": _frame([100.0, 101.0], lows=[10.0, 100.9])}
+
+    assert replay([rec], frames=frames)["n_open"] == 1
+
+
+def test_a_symbol_missing_from_the_frames_is_carried_at_cost():
+    rec = _record(symbol="GONE", outcome=None, exit_date=None, size=0.10)
+    state = replay([rec], frames={"AAA": _frame([100.0, 110.0])})
+
+    assert state["n_unmarked"] == 1
+    assert state["unrealized_pnl"] == 0.0
+    assert state["open_positions"][0]["mark_price"] is None
+
+
+def test_open_positions_are_sorted_worst_floating_loss_first():
+    recs = [
+        _record(symbol="WIN", date="2024-01-02", outcome=None, exit_date=None,
+                entry_price=100.0, size=0.05),
+        _record(symbol="LOSE", date="2024-01-02", outcome=None, exit_date=None,
+                entry_price=100.0, size=0.05),
+    ]
+    frames = {"WIN": _frame([100.0, 120.0]), "LOSE": _frame([100.0, 80.0])}
+
+    symbols = [p["symbol"] for p in replay(recs, frames=frames)["open_positions"]]
+    assert symbols == ["LOSE", "WIN"]
+
+
+def test_marked_drawdown_sees_a_dip_that_realized_drawdown_misses():
+    """An open book down 30% is a drawdown, whether or not anything closed."""
+    rec = _record(outcome=None, exit_date=None, entry_price=100.0, size=1.0)
+    state = replay([rec], frames={"AAA": _frame([100.0, 70.0, 95.0])})
+
+    assert state["max_drawdown"] == 0.0             # nothing was realized
+    assert state["max_marked_drawdown"] < -0.25     # but the account did fall

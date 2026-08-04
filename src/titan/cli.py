@@ -30,6 +30,7 @@ from pathlib import Path
 
 from titan import __version__
 from titan.core.config import TitanConfig, bar_clock, load_config, research_fingerprint
+from titan.core.jsonsafe import json_safe
 from titan.core.log import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -224,12 +225,18 @@ def _write_tracking_artifact(cfg: TitanConfig, out_dir: Path, summary: dict) -> 
     (out_dir / "tracking.json").write_text(json.dumps(summary, indent=1, default=str))
 
 
-def _write_account_artifact(cfg: TitanConfig, out_dir: Path) -> dict:
+def _write_account_artifact(
+    cfg: TitanConfig, out_dir: Path, frames: dict | None = None
+) -> dict:
     """Refresh the forward paper account from the tracking log.
 
     Derived state, not a separate ledger: it is recomputed from the log every
     time the log moves, so `scan` (which opens positions) and `track resolve`
     (which closes them) both keep it current without a third command to forget.
+
+    ``frames`` marks the open book to the latest bar. Every caller that already
+    has a dataset passes it, so the balance moves with price rather than only
+    when a trade resolves; ``titan account`` loads one for the same reason.
     """
     from titan.monitor.account import replay
     from titan.monitor.paper import PaperTrackingStore
@@ -240,9 +247,12 @@ def _write_account_artifact(cfg: TitanConfig, out_dir: Path) -> dict:
         starting_equity=cfg.monitor.paper_starting_equity,
         max_gross_exposure=cfg.backtest.max_gross_exposure,
         max_account_leverage=cfg.risk.leverage.max_account_leverage,
+        frames=frames,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "account.json").write_text(json.dumps(state, indent=1, default=str))
+    (out_dir / "account.json").write_text(
+        json.dumps(json_safe(state), indent=1, default=str, allow_nan=False)
+    )
     return state
 
 
@@ -304,7 +314,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     store = PaperTrackingStore(_paper_store_path(cfg))
     n_tracked = store.log_signals(scan.signals)
     _write_tracking_artifact(cfg, out, store.summary(_baseline_brier(cfg)))
-    account = _write_account_artifact(cfg, out)
+    account = _write_account_artifact(cfg, out, dataset.frames)
 
     print(json.dumps({
         "date": str(scan.date.date()),
@@ -367,6 +377,7 @@ def cmd_track(args: argparse.Namespace) -> int:
     store = PaperTrackingStore(_paper_store_path(cfg))
 
     n_resolved = 0
+    frames: dict | None = None
     if args.action == "resolve":
         from titan.data.store import MarketDataStore
         from titan.models.registry import ModelRegistry
@@ -380,12 +391,15 @@ def cmd_track(args: argparse.Namespace) -> int:
                 print(error, file=sys.stderr)
                 return 2
         dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
-        n_resolved = store.resolve(dataset.frames, cfg.labels)
+        frames = dataset.frames
+        n_resolved = store.resolve(frames, cfg.labels)
 
     summary = store.summary(_baseline_brier(cfg))
     out_dir = Path(args.out or cfg.run.artifacts_dir)
     _write_tracking_artifact(cfg, out_dir, summary)
-    account = _write_account_artifact(cfg, Path(args.out or cfg.run.artifacts_dir))
+    account = _write_account_artifact(
+        cfg, Path(args.out or cfg.run.artifacts_dir), frames
+    )
     print(json.dumps({
         "newly_resolved": n_resolved,
         "account_equity": account["equity"],
@@ -468,14 +482,32 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 def cmd_account(args: argparse.Namespace) -> int:
     """Print the forward paper account: equity, open book, recent trades."""
     cfg = _load_cfg(args)
-    state = _write_account_artifact(cfg, Path(args.out or cfg.run.artifacts_dir))
+
+    # Marking the open book needs prices. Loading a dataset costs a cached read
+    # in the ordinary case; --no-marks skips it for a purely realized view.
+    frames = None
+    if not getattr(args, "no_marks", False):
+        from titan.data.store import MarketDataStore
+
+        try:
+            frames = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load().frames
+        except (OSError, ValueError) as exc:
+            logger.warning("could not load prices to mark the open book: %s", exc)
+
+    state = _write_account_artifact(cfg, Path(args.out or cfg.run.artifacts_dir), frames)
 
     eq, start = state["equity"], state["starting_equity"]
     print(f"\nPAPER ACCOUNT  (replayed from {_paper_store_path(cfg)})")
     print(f"  starting equity   ${start:,.2f}")
-    print(f"  current equity    ${eq:,.2f}   ({state['total_return']:+.2%})")
+    print(f"  cash (realized)   ${eq:,.2f}   ({state['total_return']:+.2%})")
+    if state["mark_date"]:
+        print(f"  account value     ${state['account_value']:,.2f}"
+              f"   ({state['marked_return']:+.2%})   marked {state['mark_date']}")
+        print(f"  unrealized P&L    ${state['unrealized_pnl']:,.2f}")
     print(f"  realized P&L      ${state['realized_pnl']:,.2f}")
-    print(f"  max drawdown      {state['max_drawdown']:.2%}")
+    print(f"  max drawdown      {state['max_drawdown']:.2%}"
+          + (f"   (marked {state['max_marked_drawdown']:.2%})"
+             if state["max_marked_drawdown"] is not None else ""))
     print(f"  closed / open     {state['n_closed']} / {state['n_open']}"
           f"   (open notional ${state['open_notional']:,.2f})")
     if state["win_rate"] is not None:
@@ -487,12 +519,18 @@ def cmd_account(args: argparse.Namespace) -> int:
         print(f"  excluded (logged before account tracking): {state['n_legacy_unsized']}")
 
     if state["open_positions"]:
-        print("\n  OPEN POSITIONS")
-        print(f"    {'SYMBOL':12s} {'SINCE':12s} {'ENTRY':>12s} {'NOTIONAL':>14s} {'STOP':>12s}")
+        print("\n  OPEN POSITIONS  (worst floating P&L first)")
+        print(f"    {'SYMBOL':12s} {'SINCE':12s} {'ENTRY':>12s} {'MARK':>12s} "
+              f"{'LEV':>5s} {'NOTIONAL':>14s} {'MOVE':>8s} {'UNREAL':>14s} {'STOP':>12s}")
         for p_ in state["open_positions"]:
             stop = "—" if p_["stop_loss"] is None else f"{p_['stop_loss']:.6g}"
+            mark = "—" if p_["mark_price"] is None else f"{p_['mark_price']:.6g}"
+            move = "—" if p_["price_return"] is None else f"{p_['price_return']:+.2%}"
+            unreal = "—" if p_["unrealized_pnl"] is None else f"{p_['unrealized_pnl']:+,.2f}"
+            lev = "—" if p_["leverage"] <= 1 else f"{p_['leverage']:.1f}x"
             print(f"    {p_['symbol']:12s} {p_['entry_date']:12s} "
-                  f"{p_['entry_price']:12.6g} {p_['notional']:14,.2f} {stop:>12s}")
+                  f"{p_['entry_price']:12.6g} {mark:>12s} {lev:>5s} "
+                  f"{p_['notional']:14,.2f} {move:>8s} {unreal:>14s} {stop:>12s}")
 
     trades = state["trades"][: args.limit]
     if trades:
@@ -615,6 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_acct.add_argument("--config", help="YAML config path")
     p_acct.add_argument("--out", help="artifacts output dir")
     p_acct.add_argument("--limit", type=int, default=20, help="closed trades to print")
+    p_acct.add_argument(
+        "--no-marks", action="store_true",
+        help="skip loading prices; report realized P&L only, with no open-book valuation",
+    )
     p_acct.set_defaults(func=cmd_account)
 
     p_info = sub.add_parser("info", help="show platform status")
