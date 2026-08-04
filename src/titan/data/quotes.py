@@ -23,11 +23,14 @@ result so the UI can say how stale it is.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from titan.core.log import get_logger
@@ -96,22 +99,76 @@ class FrameQuotes:
         return out
 
 
-class YahooQuotes:
-    """Batched last prices from Yahoo — one request for the whole universe.
+@contextmanager
+def _quiet(*loggers: str) -> Iterator[None]:
+    """Suppress a third-party library's own logging for the duration.
 
-    ``yfinance.download`` accepts a symbol list and issues a single chunked
-    request, which is the only reason polling a 200-name book is viable at all.
-    A 1-minute interval over the last day gives the freshest print Yahoo
-    exposes without a paid feed; the last non-NaN close per column is the mark.
+    yfinance logs one ERROR line per symbol it could not fetch, plus a summary
+    listing them all. On a refresh loop over a 178-name universe that is
+    thousands of lines a minute of someone else's error reporting, drowning
+    every message this platform emits. The failures are not ignored — they come
+    back as a coverage number in :meth:`QuoteCache.status` — they are just not
+    reprinted verbatim on every tick.
+    """
+    saved = [(logging.getLogger(n), logging.getLogger(n).level) for n in loggers]
+    for log, _ in saved:
+        log.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        for log, level in saved:
+            log.setLevel(level)
+
+
+class YahooQuotes:
+    """Batched last prices from Yahoo.
+
+    Three things here are load-bearing, each learned from a failure:
+
+    **Daily bars, not 1-minute.** The current day's daily bar is *in progress*
+    during a session: its close IS the last trade. Asking for 1m bars instead
+    buys nothing for marking a book, costs far more, and is the request Yahoo
+    rejects first — a 178-symbol 1m call comes back as "possibly delisted" for
+    most of the universe.
+
+    **Chunked, and single-threaded.** ``yf.download(threads=True)`` fans out
+    across worker threads that share a sqlite timezone cache; called from a
+    background refresh thread, that races and every symbol fails with
+    ``OperationalError: unable to open database file``. Sequential chunks are
+    slower and actually work, which at a 15-second interval is the right trade.
+
+    **Coverage is reported, not assumed.** Yahoo answers a batch partially all
+    the time. Returning "some prices" as though it were success hides a feed
+    that is 40% blind, so the caller is told how many of the symbols it asked
+    for came back.
     """
 
     name = "yahoo"
 
-    def __init__(self) -> None:
+    # Yahoo degrades sharply with batch size; 50 is comfortably inside where
+    # partial failures start.
+    CHUNK = 50
+
+    # Ceiling on the per-symbol fallback. An open book is a dozen names, so
+    # this never binds in normal use; it exists so that a caller who does pass
+    # a whole universe cannot turn one failed batch into 200 serial requests.
+    MAX_FALLBACK = 25
+
+    def __init__(self, cache_dir: str | Path | None = None) -> None:
         try:
-            import yfinance  # noqa: F401
+            import yfinance as yf
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise ImportError("live quotes require: pip install 'titan[data]'") from exc
+        # Point the timezone cache somewhere writable and stable. Left at its
+        # default it lands in a platform dir that may not exist, and every
+        # lookup fails with a sqlite error that surfaces as "delisted".
+        if cache_dir is not None:
+            try:
+                path = Path(cache_dir) / "yf_tz_cache"
+                path.mkdir(parents=True, exist_ok=True)
+                yf.set_tz_cache_location(str(path))
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.debug("could not set yfinance tz cache location: %s", exc)
 
     def fetch(self, symbols: Iterable[str]) -> dict[str, Quote]:  # pragma: no cover
         import pandas as pd
@@ -120,37 +177,73 @@ class YahooQuotes:
         wanted = list(dict.fromkeys(symbols))
         if not wanted:
             return {}
-        data = yf.download(
-            tickers=wanted,
-            period="1d",
-            interval="1m",
-            auto_adjust=True,
-            progress=False,
-            group_by="column",
-            threads=True,
-        )
-        if data is None or len(data) == 0:
-            raise RuntimeError("Yahoo returned no quote data")
-
-        closes = data.get("Close", data)
-        if isinstance(closes, pd.Series):          # single symbol: no column axis
-            closes = closes.to_frame(name=wanted[0])
 
         out: dict[str, Quote] = {}
-        for symbol in wanted:
-            if symbol not in closes.columns:
-                continue
-            series = closes[symbol].dropna()
-            if series.empty:
-                continue
-            price = float(series.iloc[-1])
-            if price <= 0:
-                continue
-            stamp = series.index[-1]
-            stamp = stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else stamp
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=UTC)
-            out[symbol] = Quote(symbol, price, stamp)
+        errors: list[str] = []
+        with _quiet("yfinance", "yfinance.data", "peewee"):
+            for i in range(0, len(wanted), self.CHUNK):
+                chunk = wanted[i : i + self.CHUNK]
+                try:
+                    data = yf.download(
+                        tickers=chunk,
+                        period="5d",          # today's in-progress bar, plus slack
+                        interval="1d",
+                        auto_adjust=True,
+                        progress=False,
+                        group_by="column",
+                        threads=False,        # see class docstring
+                    )
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                    continue
+                if data is None or len(data) == 0:
+                    continue
+
+                closes = data.get("Close", data)
+                if isinstance(closes, pd.Series):   # single symbol: no column axis
+                    closes = closes.to_frame(name=chunk[0])
+                for symbol in chunk:
+                    if symbol not in closes.columns:
+                        continue
+                    series = closes[symbol].dropna()
+                    if series.empty:
+                        continue
+                    price = float(series.iloc[-1])
+                    if price <= 0:
+                        continue
+                    stamp = series.index[-1]
+                    stamp = stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else stamp
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=UTC)
+                    out[symbol] = Quote(symbol, price, stamp)
+
+        # Per-symbol fallback for whatever the batch did not answer. This is
+        # the exact call the research provider makes — proven to work wherever
+        # the dataset itself loads — and it is affordable here only because the
+        # caller asks for the OPEN BOOK, a dozen names, not the universe.
+        missing = [s for s in wanted if s not in out]
+        if missing and len(missing) <= self.MAX_FALLBACK:
+            with _quiet("yfinance", "yfinance.data", "peewee"):
+                for symbol in missing:
+                    try:
+                        df = yf.Ticker(symbol).history(
+                            period="5d", interval="1d", auto_adjust=True
+                        )
+                    except Exception:  # one bad symbol must not abort the rest
+                        continue
+                    if df is None or df.empty or "Close" not in df:
+                        continue
+                    series = df["Close"].dropna()
+                    if series.empty or float(series.iloc[-1]) <= 0:
+                        continue
+                    stamp = series.index[-1]
+                    stamp = stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else stamp
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=UTC)
+                    out[symbol] = Quote(symbol, float(series.iloc[-1]), stamp)
+
+        if not out and errors:
+            raise RuntimeError(f"every quote chunk failed: {errors[0]}")
         return out
 
 
@@ -163,7 +256,7 @@ def build_quote_source(cfg: Any, frames: Mapping[str, Any] | None = None) -> Quo
     """
     if getattr(cfg.data, "provider", None) == "yahoo":
         try:
-            return YahooQuotes()
+            return YahooQuotes(cache_dir=getattr(cfg.data, "cache_dir", None))
         except ImportError as exc:
             logger.warning("live quotes unavailable (%s); marking from bars instead", exc)
     return FrameQuotes(frames or {})
@@ -189,9 +282,12 @@ class QuoteCache:
         *,
         interval_seconds: float = 15.0,
         min_interval_seconds: float | None = None,
+        min_coverage: float = 0.5,
     ) -> None:
         self._source = source
         self._symbols = list(dict.fromkeys(symbols))
+        self._min_coverage = min_coverage
+        self._coverage = 0.0
         floor = (
             MIN_VENDOR_INTERVAL_SECONDS
             if min_interval_seconds is None and source.name != "frames"
@@ -233,7 +329,15 @@ class QuoteCache:
         return now - self._last_attempt >= self._interval + self._backoff()
 
     def refresh(self, force: bool = False) -> bool:
-        """Poll if due. Returns True when new prices were stored."""
+        """Poll if due. Returns True when new prices were stored.
+
+        A *partial* answer is not treated as success. Yahoo routinely returns
+        half a batch, and counting that as healthy resets the backoff — so a
+        feed that is chronically 60% blind gets polled at full rate forever,
+        which is both useless and the surest way to stay rate-limited. Below
+        ``min_coverage`` the prices are still kept (they are real) but the
+        attempt counts as a failure so the interval stretches.
+        """
         if not force and not self.due():
             return False
         self._last_attempt = time.monotonic()
@@ -247,12 +351,25 @@ class QuoteCache:
                 self._failures, self._interval + self._backoff(), self._error,
             )
             return False
-        if not fetched:
+
+        if fetched:
+            with self._lock:
+                self._quotes.update(fetched)
+        coverage = len(fetched) / len(self._symbols) if self._symbols else 0.0
+        self._coverage = coverage
+
+        if coverage < self._min_coverage:
             self._failures += 1
-            self._error = "vendor returned no quotes"
-            return False
-        with self._lock:
-            self._quotes.update(fetched)
+            self._error = (
+                f"only {len(fetched)}/{len(self._symbols)} symbols returned a price "
+                f"({coverage:.0%} coverage)"
+            )
+            logger.warning(
+                "quote fetch degraded (%d in a row, next attempt in %.0fs): %s",
+                self._failures, self._interval + self._backoff(), self._error,
+            )
+            return bool(fetched)
+
         self._failures = 0
         self._error = None
         self._last_success = time.monotonic()
@@ -269,6 +386,8 @@ class QuoteCache:
         return {
             "source": self._source.name,
             "n_quotes": len(quotes),
+            "n_symbols": len(self._symbols),
+            "coverage": round(self._coverage, 3),
             "interval_seconds": round(self._interval, 1),
             "quote_time": newest.isoformat() if newest else None,
             "quote_age_seconds": (

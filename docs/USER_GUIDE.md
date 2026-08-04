@@ -573,13 +573,35 @@ stale data as fresh:
 | **Prices** | `--quote-interval`, default 15s | one batched vendor request; the only clock bounded by someone else |
 | **Bars** | 15 min, or when the date rolls | a `1d` config gains one bar a day; polling faster learns nothing |
 
+**Only the open book is priced, not the universe.** Marking needs a price per
+open *position* — typically a dozen names. Requesting all 201 configured
+symbols every tick to value nine of them is a 20x waste that gets an IP
+rate-limited into returning nothing at all. `titan scan` ranks the universe
+once a bar; the refresh loop prices what the account holds.
+
 **A live vendor has a hard floor of 5s regardless of what you ask for.** This is
 a correctness guard, not politeness: being rate-limited does not give you slower
-data, it gives you *none*. Every fetch is one batched request for the whole
-universe — the research provider's per-symbol history calls would be ~180
-requests per tick, which is how an IP gets blocked. Failed fetches back off
-exponentially and keep serving the last good prices, and the status line shows
-how old they are so a fast poll can never imply fresh data it does not have.
+data, it gives you *none*. Fetches are batched and sequential (yfinance's
+threaded mode races its own sqlite timezone cache and fails every symbol from a
+background thread), on daily bars rather than 1-minute — today's daily bar is
+in progress, so its close IS the last trade, and the 1m endpoint is the first
+one Yahoo refuses at scale.
+
+**A partial answer counts as a failure.** Yahoo routinely returns half a batch.
+Treating that as success resets the backoff, so a feed that is chronically 60%
+blind keeps being polled at full rate — useless, and the surest way to stay
+rate-limited. Below 50% coverage the prices are still kept (they are real) but
+the interval stretches. The status line shows `N/M priced`, so a partly-marked
+balance is visibly partly marked.
+
+Not moving? `titan quotes` runs exactly the refresh loop's fetch once and prints
+what came back:
+
+    titan quotes --config configs/top100.yaml
+    titan quotes --symbols AAPL,BTC-USD     # test the feed with no open book
+
+When quotes fail entirely the account still marks from the latest **bar** — it
+just stops moving between closes.
 
 **Refreshing never creates an order.** New orders need a new *bar* — the gate,
 the setups and the labels are all defined on closes — so an intra-bar signal

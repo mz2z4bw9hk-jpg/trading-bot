@@ -143,30 +143,44 @@ class LiveAccount:
             # plausible number rather than an obviously broken one.
             self._marks = daily_marks(self._frames)
 
-    def _quote_symbols(self) -> list[str]:
-        """What needs a price: everything loaded, plus everything configured.
+    def _quote_symbols(self, records: list[dict]) -> list[str]:
+        """Only the symbols the account actually holds.
 
-        The loaded frames lead because they are what actually survived QC — a
-        universe entry that was excluded has no bars and no position, so asking
-        a vendor for it wastes part of every request. The configured universe is
-        the fallback for the case where no bars are loaded yet.
+        Marking an open book needs a price for each OPEN POSITION — nothing
+        else. Requesting the whole configured universe instead was the defect
+        behind a live run that hammered the vendor into refusing service: 201
+        symbols asked for, 9 needed, every second. The universe is what the
+        scanner ranks once a bar; the open book is what a mark re-prices, and
+        it is typically a dozen names.
+
+        Read straight off the log rather than from a replay: an unresolved
+        record is an open position, and that is a scan of a small JSON file
+        rather than a full ledger rebuild on every tick.
         """
-        return sorted(self._frames) or [i.symbol for i in self._cfg.universe.instruments]
+        held = {
+            str(r["symbol"]) for r in records
+            if r.get("outcome") is None and r.get("size_fraction") is not None
+        }
+        return sorted(held)
 
-    def _ensure_cache(self) -> None:
+    def _ensure_cache(self, symbols: list[str]) -> None:
+        """Build or rebuild the quote cache for the currently held symbols.
+
+        Rebuilt when the open book changes — a scan that opens a position adds
+        a symbol that needs pricing, and one that closes removes a symbol there
+        is no longer any reason to ask about.
+        """
         from titan.data.quotes import QuoteCache, build_quote_source
 
-        symbols = self._quote_symbols()
-        if self._cache is None:
-            source = build_quote_source(self._cfg, self._frames)
-            self._cache = QuoteCache(
-                source, symbols, interval_seconds=self._quote_interval
-            )
-        elif getattr(self._cache, "_source", None).__class__.__name__ == "FrameQuotes":
+        stale_source = (
+            self._cache is not None
+            and getattr(self._cache, "_source", None).__class__.__name__ == "FrameQuotes"
             # The bar-backed source holds a reference to the frames dict it was
             # built with; a reload replaces that dict, so rebuild against the
-            # new one rather than serving prices from a frame set nobody else
-            # is looking at any more.
+            # new one rather than pricing from a frame set nothing else reads.
+            and getattr(self._cache._source, "_frames", None) is not self._frames
+        )
+        if self._cache is None or stale_source or self._cache._symbols != symbols:
             self._cache = QuoteCache(
                 build_quote_source(self._cfg, self._frames),
                 symbols,
@@ -179,13 +193,13 @@ class LiveAccount:
         from titan.monitor.paper import PaperTrackingStore, paper_store_path
 
         self._ensure_frames()
-        self._ensure_cache()
-        self._cache.refresh()
-
         store = PaperTrackingStore(paper_store_path(self._cfg))
+        records = store.records
+        self._ensure_cache(self._quote_symbols(records))
+        self._cache.refresh()
         status = self._cache.status()
         state = replay(
-            store.records,
+            records,
             starting_equity=self._cfg.monitor.paper_starting_equity,
             max_gross_exposure=self._cfg.backtest.max_gross_exposure,
             max_account_leverage=self._cfg.risk.leverage.max_account_leverage,

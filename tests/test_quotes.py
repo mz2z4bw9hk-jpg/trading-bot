@@ -195,3 +195,68 @@ def test_duplicate_symbols_are_requested_once():
     src = _Stub()
     cache = QuoteCache(src, ["AAA", "AAA", "BBB", "AAA"], min_interval_seconds=0)
     assert cache._symbols == ["AAA", "BBB"]
+
+
+# ------------------------------------------------- partial vendor answers ----
+
+
+def test_a_half_answered_batch_is_not_treated_as_healthy():
+    """The defect behind a live run that never backed off.
+
+    Yahoo returns half a batch routinely. Counting that as success resets the
+    failure counter, so a feed that is chronically 60% blind keeps being polled
+    at full rate — useless, and the surest way to stay rate-limited.
+    """
+    src = _Stub({"AAA": 1.0})                     # 1 of 4 requested
+    cache = QuoteCache(src, ["AAA", "BBB", "CCC", "DDD"],
+                       interval_seconds=1.0, min_interval_seconds=0)
+
+    cache.refresh(force=True)
+
+    assert cache.status()["coverage"] == pytest.approx(0.25)
+    assert cache.status()["consecutive_failures"] == 1
+    assert cache._backoff() > 0                   # it will now wait longer
+
+
+def test_the_prices_from_a_partial_answer_are_still_kept():
+    """Degraded is not useless: real prices are real."""
+    src = _Stub({"AAA": 7.0})
+    cache = QuoteCache(src, ["AAA", "BBB", "CCC", "DDD"],
+                       interval_seconds=1.0, min_interval_seconds=0)
+    cache.refresh(force=True)
+
+    assert cache.prices() == {"AAA": 7.0}
+
+
+def test_full_coverage_clears_the_failure_state():
+    src = _Stub({"AAA": 1.0, "BBB": 2.0})
+    cache = QuoteCache(src, ["AAA", "BBB"], interval_seconds=1.0, min_interval_seconds=0)
+    cache.refresh(force=True)
+    status = cache.status()
+
+    assert status["coverage"] == 1.0
+    assert status["consecutive_failures"] == 0
+    assert status["error"] is None
+
+
+def test_status_reports_how_many_symbols_were_asked_for():
+    src = _Stub({"AAA": 1.0})
+    cache = QuoteCache(src, ["AAA", "BBB"], interval_seconds=1.0, min_interval_seconds=0)
+    cache.refresh(force=True)
+
+    assert cache.status()["n_symbols"] == 2
+    assert cache.status()["n_quotes"] == 1
+
+
+def test_a_third_party_logger_is_silenced_and_restored():
+    """yfinance logs an ERROR per failed symbol; on a loop that is a flood."""
+    import logging
+
+    from titan.data.quotes import _quiet
+
+    log = logging.getLogger("yfinance")
+    log.setLevel(logging.INFO)
+
+    with _quiet("yfinance"):
+        assert log.level == logging.CRITICAL
+    assert log.level == logging.INFO

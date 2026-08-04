@@ -934,8 +934,11 @@ function renderStatus(live) {
     : age < 5400 ? `prices ${Math.round(age / 60)}m old`
     : `prices ${(age / 3600).toFixed(1)}h old`;
   const bad = live.error || (q.consecutive_failures > 0);
-  el.textContent = `${at} · every ${live.refresh_seconds}s · ${priceTxt}`
-    + (bad ? " · STALE" : "");
+  // Coverage, not just freshness: a feed answering 3 of 9 held positions is
+  // not "working", and the balance it produces is only partly marked.
+  const cov = q.n_symbols ? ` · ${q.n_quotes}/${q.n_symbols} priced` : "";
+  el.textContent = `${at} · every ${live.refresh_seconds}s · ${priceTxt}${cov}`
+    + (bad ? " · DEGRADED" : "");
   el.title = bad
     ? (live.error || q.error || "quote fetches are failing; showing the last good prices")
     : `${q.n_quotes || 0} quotes, polled every ${q.interval_seconds}s`;

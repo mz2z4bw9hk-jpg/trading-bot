@@ -20,6 +20,8 @@ Commands
   would survive and why not. Minutes instead of the hours a large run costs.
 - ``titan account``   forward paper account replayed from the tracking log:
   starting balance, equity, open positions and the closed-trade ledger.
+- ``titan quotes``    fetch live prices for the open book once and print them;
+  the diagnostic for a dashboard whose balance is not moving.
 - ``titan info``      show config, registry, tracking and artifact status.
 """
 
@@ -574,6 +576,49 @@ def cmd_account(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quotes(args: argparse.Namespace) -> int:
+    """Fetch live prices for the open book once and print them.
+
+    A diagnostic for the live dashboard: it exercises exactly the path the
+    refresh loop uses, once, with the vendor's own errors visible — so a feed
+    problem can be seen directly instead of inferred from a stale balance.
+    """
+    from titan.data.quotes import QuoteCache, build_quote_source
+    from titan.monitor.paper import PaperTrackingStore, paper_store_path
+
+    cfg = _load_cfg(args)
+    records = PaperTrackingStore(paper_store_path(cfg)).records
+    held = sorted({
+        str(r["symbol"]) for r in records
+        if r.get("outcome") is None and r.get("size_fraction") is not None
+    })
+    if args.symbols:
+        held = [s.strip() for s in args.symbols.split(",") if s.strip()]
+
+    if not held:
+        print("No open positions, so nothing needs a live price.")
+        print("Run `titan scan` first, or pass --symbols AAPL,BTC-USD to test the feed.")
+        return 0
+
+    source = build_quote_source(cfg, {})
+    print(f"\nsource: {source.name}   symbols: {len(held)}")
+    cache = QuoteCache(source, held, interval_seconds=0, min_interval_seconds=0)
+    cache.refresh(force=True)
+
+    prices, status = cache.prices(), cache.status()
+    print(f"got {status['n_quotes']}/{status['n_symbols']} "
+          f"({status['coverage']:.0%} coverage)\n")
+    for symbol in held:
+        price = prices.get(symbol)
+        print(f"  {symbol:<12} {'—' if price is None else f'{price:,.6g}'}")
+    if status["error"]:
+        print(f"\n  error: {status['error']}")
+        print("  The account still marks from the latest BAR when quotes fail —")
+        print("  it just will not move between closes.")
+    print()
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     from titan.models.registry import ModelRegistry
     from titan.monitor.paper import PaperTrackingStore
@@ -694,6 +739,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip loading prices; report realized P&L only, with no open-book valuation",
     )
     p_acct.set_defaults(func=cmd_account)
+
+    p_q = sub.add_parser(
+        "quotes", help="fetch live prices for the open book once (feed diagnostic)"
+    )
+    p_q.add_argument("--config", help="YAML config path")
+    p_q.add_argument("--symbols", help="comma-separated symbols to test instead")
+    p_q.set_defaults(func=cmd_quotes)
 
     p_info = sub.add_parser("info", help="show platform status")
     p_info.add_argument("--config", help="YAML config path")

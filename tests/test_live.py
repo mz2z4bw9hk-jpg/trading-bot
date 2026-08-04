@@ -286,3 +286,69 @@ def test_a_tick_stays_well_inside_a_one_second_budget(wired):
     per_tick = (time.perf_counter() - started) / 5
 
     assert per_tick < 0.25, f"{per_tick * 1000:.0f}ms per tick"
+
+
+# ------------------------------------------------------- quote scope --------
+
+
+def test_quotes_are_requested_only_for_held_symbols(wired):
+    """The defect that got a live run rate-limited into no data at all.
+
+    Marking needs a price per OPEN POSITION. Asking for the whole configured
+    universe instead meant 201 symbols requested every tick to value nine.
+    """
+    _, live, _ = wired
+    records = [
+        _record(symbol="HELD_A"),
+        _record(symbol="HELD_B", date="2024-01-03"),
+        dict(_record(symbol="CLOSED"), outcome=1, exit_date="2024-01-05"),
+    ]
+
+    assert live._quote_symbols(records) == ["HELD_A", "HELD_B"]
+
+
+def test_an_account_with_nothing_open_asks_for_no_quotes(wired):
+    _, live, _ = wired
+    closed = [dict(_record(), outcome=1, exit_date="2024-01-05")]
+
+    assert live._quote_symbols(closed) == []
+
+
+def test_legacy_unsized_rows_are_not_quoted(wired):
+    """They are excluded from the ledger, so pricing them buys nothing."""
+    _, live, _ = wired
+    legacy = dict(_record(symbol="OLD"))
+    legacy.pop("size_fraction")
+
+    assert live._quote_symbols([legacy]) == []
+
+
+def test_the_quote_cache_follows_the_open_book(wired):
+    """A scan that opens or closes a position changes what needs pricing."""
+    cfg, live, _ = wired
+    live.tick()
+    assert live._cache._symbols == ["AAA"]
+
+    paper_store_path(cfg).write_text(json.dumps({"records": [
+        _record(symbol="AAA"), _record(symbol="ZZZ", date="2024-01-03"),
+    ]}))
+    live._frames["ZZZ"] = _frame([50.0, 55.0, 60.0])
+    live._marks = {}
+    live.tick()
+
+    assert live._cache._symbols == ["AAA", "ZZZ"]
+
+
+def test_the_universe_is_not_what_gets_quoted(wired):
+    """201 configured instruments, one open position -> one symbol quoted."""
+    from titan.core.types import AssetClass, Instrument
+
+    cfg, live, _ = wired
+    cfg.universe.instruments = [
+        Instrument(symbol=f"SYM{i:03d}", asset_class=AssetClass.EQUITY)
+        for i in range(201)
+    ]
+    live.tick()
+
+    assert live._cache._symbols == ["AAA"]
+    assert live.status()["quotes"]["n_symbols"] == 1
