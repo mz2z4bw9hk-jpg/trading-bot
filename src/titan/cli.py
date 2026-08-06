@@ -81,11 +81,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
         # intrabar liquidation and per-bar funding, and a half-modelled version
         # would report returns the account could not have produced.
         logger.warning(
-            "risk.leverage is configured (%s) but the walk-forward runs UNLEVERED. "
-            "Backtest Sharpe, CAGR and drawdown below describe the cash strategy; "
-            "live orders from `titan scan` carry the multiple and the paper "
-            "account is where its effect shows up.",
+            "risk.leverage is configured (%s, book capped at %.1fx notional) but the "
+            "walk-forward runs UNLEVERED. Backtest Sharpe, CAGR and drawdown below "
+            "describe the cash strategy and UNDERSTATE the live book's return and "
+            "drawdown by roughly the account multiple; live orders from `titan scan` "
+            "carry it and the paper account is where its effect shows up.",
             ", ".join(f"{k}={v}x" for k, v in sorted(cfg.risk.leverage.max_leverage.items())),
+            cfg.risk.leverage.max_account_leverage,
         )
     dataset = MarketDataStore(cfg.data, cfg.universe, seed=cfg.run.seed).load()
     builder = FeatureMatrixBuilder(cfg.features)

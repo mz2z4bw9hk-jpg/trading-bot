@@ -192,12 +192,134 @@ def test_default_config_is_unlevered():
     assert cfg.risk.leverage.for_asset_class("crypto") == 1.0
 
 
-def test_the_shipped_top100_config_levers_crypto_only():
+def test_the_shipped_top100_config_levers_both_books():
+    """Crypto perps carry more than Reg T equity margin, and both are on."""
     cfg = load_config("configs/top100.yaml")
-    assert cfg.risk.leverage.for_asset_class("crypto") == 3.0
-    assert cfg.risk.leverage.for_asset_class("equity") == 1.0
-    assert cfg.scanner.quota_for("equity") == 5
-    assert cfg.scanner.quota_for("crypto") == 5
+    equity = cfg.risk.leverage.for_asset_class("equity")
+    crypto = cfg.risk.leverage.for_asset_class("crypto")
+
+    assert equity > 1.0 and crypto > equity
+    assert equity <= 2.0, "above Reg T no retail equity account can post this"
+    assert cfg.scanner.quota_for("equity") == cfg.scanner.quota_for("crypto")
+
+
+# ------------------------------------------- an aggressive posture, checked ---
+#
+# Raising risk is a config edit; raising it COHERENTLY is not. Every dial below
+# has a partner that will silently swallow it if left behind — a heat cap that
+# truncates the sizes, a cash ceiling that cannot fund the notional ceiling, a
+# gate loosened past the point where the trade is still positive-expectancy.
+# None of those announce themselves: the account just quietly does less than
+# the config says, which is the worst way to run a risk setting.
+
+
+def _shipped():
+    return load_config("configs/top100.yaml")
+
+
+def test_the_heat_cap_does_not_silently_truncate_the_configured_sizes():
+    """The failure mode: sizes raised, aggregate cap left behind.
+
+    portfolio_heat_cap_pct bounds the SUM of size x stop-distance. If a full
+    book's heat exceeds it, the risk engine scales positions down and nothing
+    reports that the sizes in the config were never the sizes that traded.
+    """
+    import numpy as np
+
+    from titan.risk.sizing import atr_risk_size, fractional_kelly, vol_target_size
+
+    cfg = _shipped()
+    r, payoff = cfg.risk, cfg.labels.tp_sigma / cfg.labels.sl_sigma
+
+    worst = 0.0
+    for sigma in (0.008, 0.012, 0.018, 0.025, 0.035, 0.050):
+        stop = cfg.labels.sl_sigma * sigma
+        base = min(
+            fractional_kelly(0.65, payoff, r.kelly_fraction, r.max_position_weight),
+            vol_target_size(sigma * np.sqrt(252.0), r.target_annual_vol,
+                            cfg.backtest.max_positions, r.max_position_weight),
+            atr_risk_size(stop, r.risk_per_trade_pct, r.max_position_weight),
+        )
+        worst = max(worst, base * stop)
+
+    full_book = 100.0 * worst * cfg.backtest.max_positions
+    assert full_book <= r.portfolio_heat_cap_pct, (
+        f"a full book carries {full_book:.1f}% heat against a "
+        f"{r.portfolio_heat_cap_pct}% cap: the risk engine will scale positions "
+        "down and the configured sizes are fiction"
+    )
+
+
+def test_the_cash_ceiling_can_fund_the_notional_ceiling():
+    """Two caps, and the wrong one binding means orders are refused on entry.
+
+    max_account_leverage bounds notional; max_gross_exposure bounds the cash
+    posted behind it. Margin is notional/L, so the LEAST levered book is the
+    expensive one — an all-equity book at 2x needs half its notional in cash.
+    """
+    cfg = _shipped()
+    lev = cfg.risk.leverage
+    least_levered = min(lev.max_leverage.values())
+    cash_needed = lev.max_account_leverage / least_levered
+
+    assert cfg.backtest.max_gross_exposure >= cash_needed, (
+        f"funding {lev.max_account_leverage}x notional at {least_levered}x needs "
+        f"{cash_needed:.2f}x cash but max_gross_exposure is "
+        f"{cfg.backtest.max_gross_exposure}x: the account refuses orders the "
+        "scanner was told to emit"
+    )
+
+
+def test_liquidation_still_sits_beyond_the_stop_at_the_raised_multiples():
+    """The invariant leverage exists to not break, re-checked at 4x."""
+    cfg = _shipped()
+    lev = cfg.risk.leverage
+
+    for asset_class, ceiling in lev.max_leverage.items():
+        for stop in (0.01, 0.02, 0.05, 0.10, 0.20, 0.35):
+            resolved = safe_leverage(
+                stop, max_leverage=ceiling,
+                maintenance_margin_rate=lev.maintenance_margin_rate,
+                stop_buffer=lev.stop_buffer,
+            )
+            d_liq = liquidation_distance(resolved, lev.maintenance_margin_rate)
+            assert d_liq > stop, (
+                f"{asset_class} at {resolved:.2f}x liquidates at {d_liq:.1%}, "
+                f"inside a {stop:.1%} stop — the stop could never fill"
+            )
+
+
+def test_the_gate_stays_above_break_even_after_being_loosened():
+    """Riskier must still mean positive-expectancy, not a coin flip.
+
+    Break-even under the barrier geometry is p = b/(a+b) before costs. A
+    min_probability at or under that admits trades with no edge at all, which
+    is not a risk/return trade — it is just losing money faster.
+    """
+    cfg = _shipped()
+    a = cfg.labels.tp_sigma
+    b = cfg.labels.sl_sigma
+    break_even = b / (a + b)
+
+    assert cfg.signals.min_probability > break_even + 0.05, (
+        f"min_probability {cfg.signals.min_probability} is not clear of the "
+        f"{break_even:.3f} break-even for tp={a}/sl={b}"
+    )
+
+
+def test_the_two_guards_that_do_not_move_with_risk_appetite():
+    """A crash multiplier of zero and the Venn-ABERS lower bound.
+
+    Neither trades risk for return. The crash state is where the model's
+    calibration is known to be worthless, and the conservative gate is what
+    separates a real edge from one that only exists if thin calibration data is
+    taken on faith. Raising risk is a choice; deleting these is a different one.
+    """
+    cfg = _shipped()
+
+    assert cfg.risk.regime_multipliers["crash"] == 0.0
+    assert cfg.signals.conservative_gate is True
+    assert cfg.risk.leverage.stop_buffer >= 1.25
 
 
 # ---------------------------------------------------------- liquidated ----

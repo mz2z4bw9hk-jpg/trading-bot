@@ -254,8 +254,40 @@ backtest:
     commission_bps: 1.0
     spread_bps: 3.0
     impact_coefficient: 0.10
+  # Book size, doubled from 10. The cheapest way to earn more is to put idle
+  # cash to work rather than to bet harder on fewer names: an extra position
+  # adds return linearly and portfolio variance sub-linearly. Note the
+  # interaction — this also divides the vol-target rule's per-position budget
+  # (target_vol / sqrt(N)), so raising it SHRINKS each position;
+  # risk.target_annual_vol below is raised past that to more than compensate.
+  max_positions: 20
+  # Cash margin the paper account may commit, as a multiple of equity. At 1.0
+  # the book can never post more collateral than the balance holds. Distinct
+  # from risk.leverage.max_account_leverage, which caps notional rather than
+  # the cash behind it; both have to move or the account silently refuses the
+  # extra orders and reports them under n_skipped_exposure.
+  max_gross_exposure: 2.0
 
 signals:
+  # --- the gate, loosened -------------------------------------------------
+  # Break-even under this label geometry is p = (b + cost)/(a + b) ~ 0.44 with
+  # tp_sigma 2.0 against sl_sigma 1.5. min_probability is a floor sitting well
+  # above that, so 0.53 still only admits trades the calibrated model rates
+  # better than the barriers demand — it is not a licence to trade coin flips.
+  # ev_margin_bps is the cushion required above break-even and max_uncertainty
+  # the tolerated ensemble disagreement; both were set for a book that traded
+  # rarely and wanted every single order to be unarguable.
+  min_probability: 0.53      # was 0.55
+  ev_margin_bps: 2.0         # was 5.0
+  max_uncertainty: 0.35      # was 0.25
+  # DELIBERATELY NOT LOOSENED. This requires the LOWER Venn-ABERS bound to
+  # clear the threshold — that the edge survives the least favourable reading
+  # of the calibration evidence. Switching it off admits orders whose edge is
+  # an artifact of sparse data rather than orders that risk more to make more,
+  # so it buys volume without buying expected return. Set false to trade those
+  # too; it is the one remaining gate between here and no gate at all.
+  conservative_gate: true
+
   # Rule-based swing setups as a SECOND order source. The calibrated gate above
   # emits only when the model has an edge it can defend; these fire on price
   # structure instead and are labelled with the rule that produced them, so the
@@ -263,40 +295,117 @@ signals:
   technical:
     enabled: true
     # Per asset class, so a broad equity rally cannot crowd crypto off the
-    # list. With both books enabled this feeds up to 10 candidates per scan.
-    max_orders_per_scan: 5
-    min_risk_reward: 1.5
+    # list. With both books enabled this feeds up to 20 candidates per scan.
+    max_orders_per_scan: 10    # was 5
+    # A setup that pays 1.25x its stop is thinner than one that pays 1.5x, but
+    # it is still positive-expectancy once the cost check below it passes.
+    min_risk_reward: 1.25      # was 1.5
 
 scanner:
-  top_n: 10
-  # Five equities and five crypto, ranked inside their own book. A single
-  # global top-10 would not produce this: crypto's volatility is several times
+  top_n: 24                    # was 10
+  # Twelve equities and twelve crypto, ranked inside their own book. A single
+  # global top-N would not produce this: crypto's volatility is several times
   # an equity's, so it wins nearly every slot on confidence and the equity book
   # never trades.
+  #
+  # These are quotas, not targets — the gate still decides how many actually
+  # fire, and the account's exposure caps still decide how many get filled.
+  # Raising them widens the funnel; it does not force trades.
   orders_per_asset_class:
-    equity: 5
-    crypto: 5
+    equity: 12
+    crypto: 12
 
+# AN AGGRESSIVE RISK POSTURE. Every number below was raised deliberately; the
+# previous value is on each line. Read this block before believing any equity
+# curve the platform draws with it.
+#
+# WHICH DIAL DOES WHAT. Every position is sized as the MINIMUM of three
+# independent rules, so raising a rule that is not the binding one changes
+# nothing at all. Measured across realistic volatilities under the old
+# settings, the binding rule was:
+#
+#   fractional Kelly  -> every equity (11 of 18 sampled cells)
+#   vol targeting     -> every crypto (7 of 18)
+#   stop-risk (ATR)   -> NEVER, in any cell
+#
+# So risk_per_trade_pct — the intuitive "risk more per trade" dial — was dead
+# weight for model orders and only ever drove the rule-based technical book.
+# The dials that actually move the model book are kelly_fraction and
+# target_annual_vol, and they are raised first.
 risk:
-  target_annual_vol: 0.10
-  risk_per_trade_pct: 0.4
+  # Portfolio vol budget, divided by sqrt(max_positions) to get a per-position
+  # budget. 0.18 against 20 positions gives each 4.0% of annualized vol, up
+  # from 3.2% under 0.10/10 — a real increase, but less than the headline
+  # number suggests, because the position count grew too.
+  target_annual_vol: 0.18      # was 0.10
+  # Fraction of full Kelly. Full Kelly maximizes long-run growth only if the
+  # edge estimate is exact; it is not, and over-betting a mis-estimated edge is
+  # the classic way to go broke while being right on average. 0.35 is still
+  # firmly inside the fractional-Kelly range, and it is the single biggest
+  # change to the equity book.
+  kelly_fraction: 0.35         # was 0.25 (default)
+  # Cap on any one position's UNLEVERED weight. Leverage multiplies this
+  # afterwards, so at 2x equity margin a 0.20 cap is 40% of equity in notional
+  # on one name — which is why it moves less than everything around it.
+  max_position_weight: 0.20    # was 0.15 (default)
+  # Only binding on rule-based technical orders (see above). Doubled so the
+  # technical book scales with the model book instead of staying tiny.
+  risk_per_trade_pct: 0.8      # was 0.4
+  # Sum of open risk across the book. This is an aggregate backstop, and if it
+  # is left at 4.0 while positions grow it silently truncates the sizes set
+  # above rather than announcing a conflict. Raised to stay clear of the new
+  # sizes while still catching a pathological book.
+  portfolio_heat_cap_pct: 12.0   # was 4.0 (default)
+  max_sector_weight: 0.50        # was 0.35 (default)
+  # Drawdown throttle: full size until -12%, tapering to zero at -35%. The old
+  # 5%/15% band meant a routine drawdown cut sizing hard and a 15% one stopped
+  # trading entirely — appropriate for capital preservation, fatal to a
+  # strategy that is supposed to earn its way back out. The taper is KEPT
+  # because without it a bad run compounds into a dead account rather than a
+  # drawdown.
+  dd_throttle_start: 0.12      # was 0.05 (default)
+  dd_throttle_full: 0.35       # was 0.15 (default)
+  # Risk appetite by detected regime. Raised across the board: the old ladder
+  # cut risk to 30-45% in exactly the conditions a swing strategy is supposed
+  # to trade through. crash stays at ZERO — that is not conservatism, it is the
+  # one state where the model's calibration is known to be worthless and
+  # leverage turns a bad month into a terminal one.
+  regime_multipliers:
+    strong_bull: 1.00          # was 1.00
+    bull: 1.00                 # was 1.00
+    weak_bull: 0.95            # was 0.80
+    accumulation: 0.95         # was 0.80
+    range: 0.85                # was 0.60
+    distribution: 0.70         # was 0.45
+    correction: 0.60           # was 0.40
+    bear: 0.45                 # was 0.30
+    crash: 0.00                # was 0.00 — unchanged, and not negotiable
   leverage:
-    # Crypto perpetuals only. Equities are absent and therefore trade at 1x —
-    # margin on a stock needs a broker agreement that a config file has no
-    # business assuming exists.
+    # Equities now trade on margin too. 2x is Reg T, the standard retail margin
+    # account, so it is a realistic thing to paper-trade; it is NOT free, and in
+    # reality it requires a signed margin agreement and pays interest this
+    # platform does not model for equities (it models funding for perps only).
     #
-    # 3x is a ceiling, not a setting. Each order solves for the largest
-    # multiple whose liquidation price stays 1.5 stop-widths beyond its stop
-    # and takes the smaller of the two, so wide-stop trades de-lever
-    # themselves. What it does NOT do is make trades safer: at 3x, a stop that
-    # cost 0.4% of equity costs 1.2%. The order card's risk column shows the
-    # levered number.
+    # These are ceilings, not settings. Each order solves for the largest
+    # multiple whose liquidation price stays 1.5 stop-widths beyond its stop and
+    # takes the smaller of the two, so wide-stop trades de-lever themselves. At
+    # 4x, a crypto stop that cost 0.8% of equity costs 3.2%. The order card's
+    # risk column shows the levered number.
     max_leverage:
-      crypto: 3.0
+      equity: 2.0              # was absent, i.e. 1.0 (cash)
+      crypto: 4.0              # was 3.0
     maintenance_margin_rate: 0.005
     funding_bps_daily: 3.0     # ~0.01% per 8h, charged on notional
+    # DELIBERATELY NOT LOWERED. This is how much room the liquidation level
+    # must keep beyond the stop. Below ~1.2 the exchange closes the position
+    # before the stop can fill, which does not make the strategy riskier in a
+    # way that pays — it deletes the risk management and keeps the risk.
     stop_buffer: 1.5
-    # Ceiling on summed notional across the book. Five 3x crypto positions
-    # would otherwise stack to far more market exposure than one balance can
-    # answer for.
-    max_account_leverage: 2.0
+    # Ceiling on summed notional across the whole book, and the governor that
+    # actually decides how much of the balance gets deployed. Positions under
+    # these settings average ~23% notional, so 3.0x funds about 13 of them at
+    # once. Orders beyond it are not filled: the account takes them
+    # best-ranked first and reports the rest under n_skipped_exposure, so if
+    # that number climbs, the quotas above are writing cheques this line will
+    # not cash.
+    max_account_leverage: 3.0  # was 2.0

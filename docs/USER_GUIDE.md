@@ -364,16 +364,22 @@ them:
 
 ```yaml
 scanner:
-  top_n: 10                     # fallback for classes not named below
+  top_n: 24                     # fallback for classes not named below
   orders_per_asset_class:
-    equity: 5
-    crypto: 5
+    equity: 12
+    crypto: 12
 ```
 
 This is not cosmetic. Crypto's daily volatility runs several times an equity's,
 so on one ranked list the coins take nearly every slot and the equity book is
-never traded. Ranking inside each class is what actually produces "the five
-best stocks and the five best crypto".
+never traded. Ranking inside each class is what actually produces "the best
+stocks and the best crypto" rather than "the most volatile things available".
+
+These numbers are **quotas, not targets**. The gate still decides how many
+orders actually fire, and the account's funding ceilings (§6e) still decide how
+many get filled — raising a quota widens the funnel, it does not manufacture
+trades. If `n_skipped_exposure` on the account starts climbing, the quotas are
+writing cheques `max_account_leverage` will not cash.
 
 Two rules govern what reaches the list:
 
@@ -385,26 +391,33 @@ Two rules govern what reaches the list:
   ones means five orders, not ten. Backfilling would quietly double crypto
   exposure on days the equity screen is silent.
 
-## 6e. Leverage (crypto perpetuals)
+## 6e. Leverage (margin, per asset class)
 
-Off by default. Turn it on per asset class:
+Off by default. Turn it on per asset class — `configs/top100.yaml` ships with
+both books levered:
 
 ```yaml
 risk:
   leverage:
     max_leverage:
-      crypto: 3.0             # equities absent -> 1.0, cash
+      equity: 2.0             # Reg T, the standard retail margin account
+      crypto: 4.0             # perpetuals
     maintenance_margin_rate: 0.005
     funding_bps_daily: 3.0    # ~0.01% per 8h, charged on notional
     stop_buffer: 1.5          # liquidation must stay 1.5 stop-widths away
-    max_account_leverage: 2.0 # ceiling on summed notional / equity
+    max_account_leverage: 3.0 # ceiling on summed notional / equity
 ```
 
-**Leverage multiplies risk, not just size.** A position sized to lose 0.4% of
-equity at its stop loses 1.2% at 3x. There is no version of this where the
-notional triples and the loss does not. The `Risk` column on the order card,
+**Leverage multiplies risk, not just size.** A position sized to lose 0.8% of
+equity at its stop loses 3.2% at 4x. There is no version of this where the
+notional quadruples and the loss does not. The `Risk` column on the order card,
 the paper ledger and the account KPIs all show the levered number, because that
 is the number that is true.
+
+Funding is modelled for perpetuals only. Equity margin in the real world pays
+broker interest that this platform does **not** charge — so a levered equity
+book here is slightly cheaper than the same book at a broker, and its edge is
+correspondingly flattered.
 
 `max_leverage` is a **ceiling, not a setting**. Each order solves for the
 largest multiple whose liquidation price stays `stop_buffer` stop-widths beyond
@@ -412,11 +425,16 @@ its stop, and takes the smaller of that and the ceiling:
 
 > L ≤ 1 / (stop_buffer · stop_distance + maintenance_margin_rate)
 
-A 2% stop leaves that slack and gets the full 3x. A 25% stop resolves to ~2.6x
-on its own. A stop wide enough that no multiple is safe trades unlevered rather
-than being rejected. The consequence worth internalizing: **a wide-stop trade
-de-levers itself**, so leverage concentrates in exactly the tight-stop setups
-where it is survivable.
+A 2% stop leaves that slack and gets the full 4x. A 20% stop resolves to ~3.2x
+on its own, a 30% stop to ~2.2x. A stop wide enough that no multiple is safe
+trades unlevered rather than being rejected. The consequence worth
+internalizing: **a wide-stop trade de-levers itself**, so leverage concentrates
+in exactly the tight-stop setups where it is survivable.
+
+`stop_buffer` is the one dial in this block that should not be lowered to buy
+risk. Below ~1.2 the exchange closes the position before the stop can fill,
+which does not make the strategy more aggressive in a way that pays — it
+removes the risk management and keeps the risk.
 
 The order card gains three columns — `Lev`, `Liquidation`, and `Margin`
 alongside `Size`. Size is notional as a percent of equity; margin is the cash it
@@ -453,10 +471,127 @@ for its effect.
 
 What is **not** modelled: cross margin (one position's loss eating another's
 collateral — it would let a single trade liquidate the whole book), short
-perpetuals (every setup here is long), tiered maintenance margin, and funding
-that varies with the basis. Equities stay at 1x unless you add them explicitly,
-because margin on a stock needs a broker agreement a config file has no
-business assuming exists.
+perpetuals (every setup here is long), tiered maintenance margin, funding that
+varies with the basis, and broker interest on equity margin. Equity leverage
+also assumes a signed margin agreement exists; a config file can enable it, a
+brokerage cannot be talked into it the same way.
+
+## 6f. The risk posture, and which dial actually moves it
+
+`configs/top100.yaml` ships an **aggressive** posture. This section says what
+that means, because an equity curve drawn under it is not comparable to one
+drawn under the platform defaults.
+
+### Only one of the three sizing rules is ever binding
+
+Every position is sized as the **minimum** of fractional Kelly, vol targeting
+and stop-risk (§ sizing). A minimum has exactly one binding argument, so
+raising any of the other two changes nothing whatsoever. Measured across
+realistic volatilities:
+
+| Binding rule | Where it binds |
+|---|---|
+| fractional Kelly (`kelly_fraction`) | every equity cell sampled |
+| vol targeting (`target_annual_vol`) | every crypto cell sampled |
+| stop-risk (`risk_per_trade_pct`) | **never**, at any volatility |
+
+This is the counter-intuitive part. `risk_per_trade_pct` reads like *the* risk
+dial and it is the one most people reach for first, but for model orders it is
+dead weight — the ATR rule is the loosest of the three everywhere, so the
+minimum never selects it. It binds only on rule-based technical orders, which
+have no Kelly term and no vol-target term because a chart pattern does not
+produce a probability.
+
+If you want more risk, raise `kelly_fraction` and `target_annual_vol`. If you
+raise `risk_per_trade_pct` alone, expect nothing to happen.
+
+### Everything that has to move together
+
+Raising sizing in isolation gets silently undone by whichever aggregate cap is
+reached first, and none of them announce it:
+
+| Cap | What it swallows if left behind |
+|---|---|
+| `risk.portfolio_heat_cap_pct` | scales every position down once summed risk hits it. At the old 4%, this book would have been **1.9x over** — half the size, no warning |
+| `backtest.max_gross_exposure` | cash margin. An all-equity book at 2x needs 1.5x cash to carry 3.0x notional |
+| `risk.leverage.max_account_leverage` | notional. Orders past it are refused on entry and counted in `n_skipped_exposure` |
+| `backtest.max_positions` | also divides the vol-target budget by `sqrt(N)` — raising the book size *shrinks* each position |
+
+`tests/test_leverage.py` asserts these stay consistent with each other, so an
+incoherent posture fails the suite rather than quietly under-trading.
+
+### What it is worth
+
+Measured through the real sizing code path, old posture vs shipped:
+
+| | notional per position | account notional cap |
+|---|---|---|
+| before | ~11% of equity | 2.0x |
+| after | ~23% of equity | 3.0x |
+
+Roughly **2x the notional per position** and **1.5x the book**. Leverage is most
+of it: base sizes rose ~1.3x, the multiples did the rest.
+
+### And what it costs
+
+Scaling every position by `k` scales the portfolio's per-bar return by `k`.
+Running a real walk-forward's return series through that isolates the size
+effect exactly — trade *selection* is held fixed, so nothing is confounded:
+
+| k | CAGR | max drawdown | ann vol | Sharpe | Calmar |
+|---|---|---|---|---|---|
+| 1.0 | 0.55% | −2.6% | 2.0% | 0.29 | 0.21 |
+| **2.05** (shipped) | **1.08%** | **−5.2%** | 4.0% | **0.29** | 0.21 |
+| 3.0 | 1.53% | −7.6% | 5.9% | 0.29 | 0.20 |
+| 6.0 | 2.71% | −14.9% | 11.8% | 0.29 | 0.18 |
+| 10.0 | 3.72% | −24.1% | 19.6% | 0.29 | 0.15 |
+
+(Absolute numbers are from the offline synthetic market and mean nothing for a
+real universe. The **ratios** are the point.)
+
+Three things to take from that table:
+
+1. **Sharpe does not move.** It is 0.29 at every size. Risk does not create
+   edge; it only rents more of whatever edge is already there. If the strategy
+   is not profitable, a riskier version of it loses money faster.
+2. **At the shipped setting the trade is roughly fair** — return ×1.98 against
+   drawdown ×2.04.
+3. **It stops being fair if you keep going.** At k=6 it is return ×4.97 against
+   drawdown ×5.80; at k=10, ×6.83 against ×9.42. Calmar decays from 0.21 to
+   0.15 because compounding punishes volatility — a −24% drawdown needs +32%
+   to recover. Past some multiple, more risk lowers terminal wealth even though
+   expected return keeps rising. That is why the dials above stop where they do.
+
+What this table deliberately excludes is the gain from trading *more*: the
+wider quotas and looser gate add trades, and extra positions add return
+linearly while adding variance sub-linearly. That part improves the ratio.
+Sizing up does not.
+
+### What was deliberately not raised
+
+Three things stay put, and none of them is caution for its own sake — they are
+the settings where loosening buys volume without buying expected return:
+
+- **`regime_multipliers.crash: 0.0`** — the one state where the model's
+  calibration is known to be worthless. Leverage here turns a bad month into a
+  terminal one.
+- **`signals.conservative_gate: true`** — requires the *lower* Venn-ABERS bound
+  to clear the threshold, i.e. that the edge survives the least favourable
+  reading of the calibration evidence. Turning it off admits orders whose edge
+  is an artifact of sparse data.
+- **`leverage.stop_buffer: 1.5`** — below ~1.2 the exchange closes the position
+  before the stop can fill.
+
+The drawdown throttle was widened (5%/15% → 12%/35%) but **kept**: without a
+taper a bad run compounds into a dead account rather than a drawdown.
+
+### Reverting
+
+Every changed line in `configs/top100.yaml` carries its previous value in a
+trailing comment, so the conservative posture is recoverable by reading the
+file. Note that the risk block is deliberately excluded from the research
+fingerprint (§ config guard) — changing it does **not** invalidate your trained
+model or force a re-validate, and does not reset the paper account.
 
 ## 7. Tuning the knobs that matter
 
@@ -466,7 +601,9 @@ All in your YAML config (validated by pydantic — typos fail loudly):
 |---|---|
 | `labels.tp_sigma` / `sl_sigma` / `horizon_bars` | barrier geometry: what "win" means. Changes the gate automatically |
 | `signals.min_probability`, `ev_margin_bps` | how picky the gate is (fewer, better trades) |
-| `risk.target_annual_vol`, `risk_per_trade_pct`, `kelly_fraction` | aggressiveness; the minimum-of-three sizing keeps any one mistake bounded |
+| `risk.target_annual_vol`, `kelly_fraction` | aggressiveness — and, for model orders, the only two that bind (§6f) |
+| `risk.risk_per_trade_pct` | binds on rule-based technical orders only; near-inert for model orders (§6f) |
+| `risk.portfolio_heat_cap_pct` | aggregate backstop. Raise it with the sizes or it silently truncates them (§6f) |
 | `risk.regime_multipliers` | risk appetite per regime (crash is 0 — think hard before changing) |
 | `risk.leverage.max_leverage` | margin per asset class; a ceiling, and it multiplies loss as well as size (§6e) |
 | `scanner.orders_per_asset_class` | how many orders each book gets, ranked within itself (§6d) |
