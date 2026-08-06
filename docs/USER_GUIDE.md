@@ -567,6 +567,40 @@ wider quotas and looser gate add trades, and extra positions add return
 linearly while adding variance sub-linearly. That part improves the ratio.
 Sizing up does not.
 
+### The whole change, end to end
+
+A matched walk-forward pins it down — same market, same seed, same folds, same
+model, with the risk posture as the only difference:
+
+| | baseline | aggressive | ratio |
+|---|---|---|---|
+| CAGR | 42.9% | 76.2% | **×1.77** |
+| max drawdown | −2.5% | −4.0% | **×1.64** |
+| ann vol | 5.6% | 8.9% | ×1.58 |
+| **Sharpe** | **6.38** | **6.40** | **×1.00** |
+| Calmar | 17.4 | 18.9 | ×1.08 |
+| trades | 1020 | 1128 | ×1.11 |
+| exposure | 16.5% | 27.3% | ×1.65 |
+| win rate | 73.0% | 71.9% | ×0.98 |
+| profit factor | 3.10 | 2.86 | ×0.92 |
+| median terminal wealth (3y) | 2.91x | 5.49x | ×1.89 |
+
+Run on the **strong-signal positive control** (`configs/control-strong-signal.yaml`),
+where the edge is planted and findable — a Sharpe of 6.4 is an artifact of that
+market, not a claim about any real one. Ratios transfer; levels do not.
+
+Return grew *faster* than drawdown here (1.77 vs 1.64) and Calmar improved 8%,
+which is the diversification effect above showing up: the extra trades earned
+more than the extra size cost. The two dents are `win_rate` and `profit_factor`,
+both slightly down — that is the looser gate admitting marginally weaker trades,
+exactly as it should, and it is the price paid for the volume.
+
+Two limits on that table. It runs **unlevered** (§6e), so the 2x/4x multiples
+are *on top* of everything shown. And Sharpe holding flat at 6.40 is the whole
+warning restated: this posture scales whatever the strategy already does. On a
+market where the edge is weak or absent, it scales the losses by the same
+factor and the drawdown column is where you would find out.
+
 ### What was deliberately not raised
 
 Three things stay put, and none of them is caution for its own sake — they are
