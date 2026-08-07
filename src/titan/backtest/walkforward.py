@@ -358,7 +358,7 @@ class WalkForwardRunner:
         regimes = pd.concat(regime_tables).sort_index()
         regimes = regimes[~regimes.index.duplicated(keep="first")]
         close_wide = pd.concat(
-            {sym: f["close"] for sym, f in dataset.frames.items()}, axis=1
+            {sym: f["close"] for sym, f in dataset.frames.items()}, axis=1, sort=True,
         )
         returns_wide = close_wide.pct_change()
         risk_engine = RiskEngine(

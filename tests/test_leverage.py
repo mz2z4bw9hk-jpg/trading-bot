@@ -269,6 +269,18 @@ def test_the_cash_ceiling_can_fund_the_notional_ceiling():
         "scanner was told to emit"
     )
 
+    # The consistency check above is satisfiable from either end, and raising
+    # the cash cap is the cheaper-looking way to satisfy it. It is also the
+    # wrong one: leverage is already modelled on notional, so margin above 1x
+    # equity applies the multiple a second time and posts collateral the
+    # balance does not hold. Pin that end down, or the pair can be made
+    # consistent and unreachable at the same time.
+    assert cfg.backtest.max_gross_exposure <= 1.0, (
+        f"max_gross_exposure is {cfg.backtest.max_gross_exposure}x: the account "
+        "would post more cash as margin than the balance holds, and every equity "
+        "curve drawn from it is unreachable with the stated starting capital"
+    )
+
 
 def test_liquidation_still_sits_beyond_the_stop_at_the_raised_multiples():
     """The invariant leverage exists to not break, re-checked at 4x."""

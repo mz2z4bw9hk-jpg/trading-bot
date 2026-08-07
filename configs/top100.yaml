@@ -264,9 +264,18 @@ backtest:
   # Cash margin the paper account may commit, as a multiple of equity. At 1.0
   # the book can never post more collateral than the balance holds. Distinct
   # from risk.leverage.max_account_leverage, which caps notional rather than
-  # the cash behind it; both have to move or the account silently refuses the
-  # extra orders and reports them under n_skipped_exposure.
-  max_gross_exposure: 2.0
+  # the cash behind it.
+  #
+  # BACK TO 1.0, and it should not be raised again. Leverage is already modelled
+  # once, on notional: a position posts notional/leverage as margin, so 2x Reg T
+  # on $1M of cash already buys $2M of exposure. Letting the *margin* total reach
+  # 2x equity as well applies the multiple twice — $2M of collateral against a
+  # $1M balance, funding $4M of notional. The account had $1.04M of margin posted
+  # against $1.0M of equity, which is not a risk setting, it is an accounting
+  # error: the equity curve drawn from it is not reachable with the stated
+  # balance. Use max_account_leverage to trade bigger; it is the dial that means
+  # what it says.
+  max_gross_exposure: 1.0
 
 signals:
   # --- the gate, loosened -------------------------------------------------
@@ -402,10 +411,16 @@ risk:
     # way that pays — it deletes the risk management and keeps the risk.
     stop_buffer: 1.5
     # Ceiling on summed notional across the whole book, and the governor that
-    # actually decides how much of the balance gets deployed. Positions under
-    # these settings average ~23% notional, so 3.0x funds about 13 of them at
-    # once. Orders beyond it are not filled: the account takes them
-    # best-ranked first and reports the rest under n_skipped_exposure, so if
-    # that number climbs, the quotas above are writing cheques this line will
-    # not cash.
-    max_account_leverage: 3.0  # was 2.0
+    # actually decides how much of the balance gets deployed. Orders beyond it
+    # are not filled: the account takes them best-ranked first and reports the
+    # rest under n_skipped_exposure, so if that number climbs, the quotas above
+    # are writing cheques this line will not cash.
+    #
+    # BACK TO 2.0, because 3.0 was never fundable. Margin is notional/L, so the
+    # least-levered class sets the cash price of the notional ceiling: an
+    # all-equity book at 2x needs half its notional in cash, and 3.0x notional
+    # therefore needs 1.5x equity of margin. The account only has 1.0x. The two
+    # dials were raised together so the consistency test still passed, which is
+    # how an unfundable pair shipped — that test now also requires the cash cap
+    # to be one an account can actually post.
+    max_account_leverage: 2.0

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from titan.backtest.engine import PortfolioSnapshot, TradePlan
 from titan.core.config import TitanConfig
 from titan.core.log import get_logger
 from titan.core.types import Regime
@@ -26,6 +27,7 @@ from titan.features.registry import FeaturePanel
 from titan.models.ensemble import CalibratedEnsemble
 from titan.regime.detector import RegimeDetector, RegimeSnapshot
 from titan.risk.leverage import LeverageTerms
+from titan.risk.portfolio import RiskEngine
 from titan.signals.analogues import AnalogueIndex
 from titan.signals.generator import SignalGenerator
 from titan.signals.schema import Signal
@@ -85,12 +87,12 @@ class ScanResult:
     def portfolio_heat(self) -> float:
         """Summed risk-at-stop across the emitted orders, in percent of equity.
 
-        Reported, not enforced. Leverage makes this worth looking at: five
-        crypto orders at 3x carry three times the heat the same five would
-        unlevered, and the per-position risk figure gives no hint of the total.
-        The scanner's job is to say what it found and what it would cost; how
-        many of those orders to actually place is the operator's call, and the
-        account applies its own funding ceilings besides.
+        Now enforced, not merely reported: ``_construct`` sizes the book
+        against ``risk.portfolio_heat_cap_pct``, so this reads back at or under
+        that cap rather than describing whatever the standalone sizes summed
+        to. Leverage is why it needed enforcing — five crypto orders at 3x
+        carry three times the heat the same five would unlevered, and no
+        per-position risk figure gives any hint of the total.
         """
         return sum(s.risk_percentage for s in self.signals)
 
@@ -133,6 +135,7 @@ class MarketScanner:
         self._explainer = explainer
         self._analogues = analogues
         self._terms_cache: dict[str, LeverageTerms] = {}
+        self._returns_cache: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------ #
 
@@ -284,17 +287,24 @@ class MarketScanner:
         for rank, row in enumerate(rows, start=1):
             row.rank = rank
 
-        selected = self._select(signals)
+        selected, cuts = self._construct(self._select(signals), dataset, snapshot, own_date)
+        for row in rows:
+            if row.symbol in cuts:
+                row.status = cuts[row.symbol]
+
         result = ScanResult(date=last_date, regime=snapshot, rows=rows, signals=selected)
         by_class = ", ".join(
             f"{k} {len(v)}" for k, v in sorted(result.signals_by_asset_class().items())
         )
+        n_dropped = sum(1 for v in cuts.values() if v.startswith("cut"))
+        n_shrunk = len(cuts) - n_dropped
         logger.info(
             "scan %s: %d instruments (%d ranked, %d stale), %d candidates "
-            "(%d model, %d technical) -> %d orders [%s] (regime=%s)",
+            "(%d model, %d technical) -> %d orders [%s] "
+            "(risk: %d cut, %d resized; heat %.1f%% of equity, regime=%s)",
             last_date.date(), len(rows), len(fresh), len(stale), len(signals),
             len(signals) - n_tech, n_tech, len(selected), by_class or "none",
-            snapshot.regime.value,
+            n_dropped, n_shrunk, result.portfolio_heat, snapshot.regime.value,
         )
         return result
 
@@ -315,6 +325,9 @@ class MarketScanner:
         an order of magnitude in volatility, so a single ranked list is not a
         fair fight — the louder class takes every slot, and the account ends up
         concentrated in whichever one happened to be moving.
+
+        This is candidate selection only. Sizes here are still standalone —
+        :meth:`_construct` is what turns them into a portfolio.
         """
         best: dict[str, Signal] = {}
         for s in sorted(candidates, key=lambda s: -s.confidence_score):
@@ -332,6 +345,129 @@ class MarketScanner:
             out.extend(group[: self._cfg.scanner.quota_for(asset_class)])
         out.sort(key=lambda s: (s.asset_class, -s.confidence_score))
         return out
+
+    # ------------------------------------------------------------------ #
+
+    def _returns_wide(self, dataset: MarketDataset) -> pd.DataFrame:
+        """Per-bar returns, date x symbol, for the correlation estimate."""
+        if self._returns_cache is None:
+            # sort=True is not cosmetic: instruments trade on different
+            # calendars, so the union index arrives interleaved, and the
+            # correlation window slices it with .loc[:when].tail(n). An
+            # unsorted index makes that slice silently wrong.
+            close = pd.concat(
+                {sym: f["close"] for sym, f in dataset.frames.items()},
+                axis=1, sort=True,
+            )
+            self._returns_cache = close.pct_change()
+        return self._returns_cache
+
+    def _construct(
+        self,
+        ranked: list[Signal],
+        dataset: MarketDataset,
+        snapshot: RegimeSnapshot,
+        own_date: pd.Series,
+    ) -> tuple[list[Signal], dict[str, str]]:
+        """Size the order list as a portfolio instead of as N separate bets.
+
+        The signal generator sizes every candidate standalone — the minimum of
+        Kelly, a vol target and an ATR stop budget — and it has never seen the
+        rest of the book. Everything that depends on what else is being held
+        lives in :class:`RiskEngine`: the heat cap, the sector cap, the regime
+        appetite, and the correlation penalty that exists precisely so five
+        names that are one bet cannot be sized as five.
+
+        Until now that engine ran only inside the backtester. The live scanner
+        emitted the generator's standalone sizes directly, so the strategy
+        being measured in validation was not the strategy being traded — the
+        one claim ``risk/portfolio.py`` opens by making. A scan could therefore
+        return a full book of large-cap defensives, each one individually
+        within its limits and the set of them a single leveraged bet on one
+        factor, which is what a correlation penalty is for.
+
+        Returns the approved orders and, per symbol, why anything was cut.
+        """
+        engine = RiskEngine(
+            self._cfg.risk, universe=dataset.universe, returns=self._returns_wide(dataset)
+        )
+        # One live regime for the whole scan, so it is applied here rather than
+        # through the engine's time-indexed lookup (which expects a backtest's
+        # regime history). Crash is already zeroed upstream by the generator.
+        regime_mult = float(
+            self._cfg.risk.regime_multipliers.get(snapshot.regime.value, 0.5)
+        )
+
+        approved: list[Signal] = []
+        cuts: dict[str, str] = {}
+        symbol_weights: dict[str, float] = {}
+        sector_weights: dict[str, float] = {}
+        open_risk = 0.0
+
+        for s in sorted(ranked, key=lambda s: -s.confidence_score):
+            requested = s.position_size_fraction
+            if requested <= 0:
+                continue
+            tp = max(s.take_profit_levels) if s.take_profit_levels else 0.0
+            entry = s.market_entry or s.optimal_limit_entry
+            if not (s.stop_loss < tp) or entry <= 0:
+                # Not a well-formed long plan; leave it exactly as generated
+                # rather than inventing prices to make the risk call possible.
+                approved.append(s)
+                continue
+            plan = TradePlan(
+                symbol=s.symbol,
+                decision_date=own_date[s.symbol],
+                size_fraction=requested,
+                stop_price=s.stop_loss,
+                tp_price=tp,
+                max_holding_bars=max(int(s.expected_holding_bars), 1),
+                entry_ref=entry,
+                priority=s.confidence_score,
+            )
+            state = PortfolioSnapshot(
+                equity=1.0,
+                n_positions=len(approved),
+                gross_exposure=sum(symbol_weights.values()),
+                open_risk_fraction=open_risk,
+                symbol_weights=dict(symbol_weights),
+                sector_weights=dict(sector_weights),
+                strategy_drawdown=0.0,
+            )
+            granted = engine.approve(plan, state) * regime_mult
+            if granted <= 1e-6:
+                cuts[s.symbol] = "cut: portfolio risk (heat/sector/correlation)"
+                continue
+
+            scale = min(granted / requested, 1.0)
+            if scale < 0.999:
+                s = self._rescale(s, scale)
+                cuts[s.symbol] = f"signal (sized to {scale:.0%} by portfolio risk)"
+
+            approved.append(s)
+            symbol_weights[s.symbol] = s.position_size_fraction
+            sector = dataset.universe.sector_of(s.symbol)
+            sector_weights[sector] = (
+                sector_weights.get(sector, 0.0) + s.position_size_fraction
+            )
+            open_risk += s.risk_percentage / 100.0
+
+        approved.sort(key=lambda s: (s.asset_class, -s.confidence_score))
+        return approved, cuts
+
+    @staticmethod
+    def _rescale(s: Signal, scale: float) -> Signal:
+        """Shrink a position's notional at constant leverage.
+
+        Margin and risk-at-stop are both linear in notional, so they scale with
+        it. Leverage, liquidation price and funding cost are ratios *of*
+        notional and are therefore unchanged — shrinking a 3x position leaves
+        it 3x, just smaller, and its liquidation price where it was.
+        """
+        s.position_size_fraction *= scale
+        s.margin_fraction *= scale
+        s.risk_percentage *= scale
+        return s
 
     # ------------------------------------------------------------------ #
 
