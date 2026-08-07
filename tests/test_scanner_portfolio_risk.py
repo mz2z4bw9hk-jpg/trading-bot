@@ -193,16 +193,69 @@ def test_a_book_of_one_bet_is_sized_smaller_than_a_book_of_five():
 
 
 def test_the_heat_cap_binds_on_the_emitted_orders():
-    """Summed risk-at-stop must respect the cap the config states."""
+    """The cap governs CORRELATION-AWARE heat, not the linear sum.
+
+    The summed figure is the loss if all six stopped out on the same bar. For
+    six independent names that is a worst case with no probability attached,
+    and holding the book to it is what made the correlation penalty inert: the
+    cap bound at the same total either way, so the penalty could only shuffle
+    size between names. A diversified book is allowed past the summed cap
+    precisely because its real risk is lower — that is the room diversification
+    buys, and the effective figure is what may not exceed the cap.
+    """
     cfg = TitanConfig()
     cfg.risk.portfolio_heat_cap_pct = 2.0
     cfg.risk.max_sector_weight = 1.0
 
     result = _run(["A", "B", "C", "D", "E", "F"], correlated=False, cfg=cfg)
 
-    assert result.portfolio_heat <= cfg.risk.portfolio_heat_cap_pct + 1e-6, (
-        f"emitted {result.portfolio_heat:.2f}% heat against a "
+    assert result.effective_heat <= cfg.risk.portfolio_heat_cap_pct + 1e-6, (
+        f"effective heat {result.effective_heat:.2f}% breached a "
         f"{cfg.risk.portfolio_heat_cap_pct}% cap"
+    )
+    assert result.portfolio_heat > result.effective_heat, (
+        "an independent book should sum to more than its correlation-aware heat"
+    )
+
+
+def test_a_correlated_book_is_held_to_the_summed_cap():
+    """At perfect correlation sqrt(r' C r) reduces to sum(r), so nothing loosens.
+
+    This is the safety half of the change: a book that really is one bet gets
+    no extra room, and is sized exactly as the old linear cap sized it.
+    """
+    cfg = TitanConfig()
+    cfg.risk.portfolio_heat_cap_pct = 2.0
+    cfg.risk.max_sector_weight = 1.0
+
+    result = _run(["A", "B", "C", "D", "E", "F"], correlated=True, cfg=cfg)
+
+    assert result.effective_heat <= cfg.risk.portfolio_heat_cap_pct + 1e-6
+    # Near-identical returns: the two measures should almost coincide.
+    assert result.portfolio_heat == pytest.approx(result.effective_heat, rel=0.05)
+
+
+def test_the_correlation_penalty_now_reduces_total_book_risk():
+    """The defect this change exists to fix.
+
+    With a linear cap the correlated and independent books both saturated it,
+    so the penalty redistributed size and changed nothing about what the book
+    carried. Under the quadratic form the independent book gets more room.
+    """
+    cfg = TitanConfig()
+    cfg.risk.portfolio_heat_cap_pct = 1.2      # low enough that the cap binds
+    cfg.risk.max_sector_weight = 1.0
+    syms = ["A", "B", "C", "D", "E"]
+
+    one_bet = _run(syms, correlated=True, cfg=cfg)
+    five_bets = _run(syms, correlated=False, cfg=cfg)
+
+    one_notional = sum(s.position_size_fraction for s in one_bet.signals)
+    five_notional = sum(s.position_size_fraction for s in five_bets.signals)
+
+    assert five_notional > one_notional * 1.2, (
+        f"diversified book took {five_notional:.3f} against the concentrated "
+        f"book's {one_notional:.3f}: the cap is still correlation-blind"
     )
 
 

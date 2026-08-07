@@ -76,6 +76,10 @@ class ScanResult:
     regime: RegimeSnapshot
     rows: list[ScanRow] = field(default_factory=list)
     signals: list[Signal] = field(default_factory=list)
+    # Correlation-aware heat, sqrt(r' C r). This is the quantity the cap
+    # governs; ``portfolio_heat`` below is the same book measured as if every
+    # position stopped out on the same bar.
+    effective_heat: float = 0.0
 
     def signals_by_asset_class(self) -> dict[str, list[Signal]]:
         out: dict[str, list[Signal]] = {}
@@ -87,12 +91,12 @@ class ScanResult:
     def portfolio_heat(self) -> float:
         """Summed risk-at-stop across the emitted orders, in percent of equity.
 
-        Now enforced, not merely reported: ``_construct`` sizes the book
-        against ``risk.portfolio_heat_cap_pct``, so this reads back at or under
-        that cap rather than describing whatever the standalone sizes summed
-        to. Leverage is why it needed enforcing — five crypto orders at 3x
-        carry three times the heat the same five would unlevered, and no
-        per-position risk figure gives any hint of the total.
+        The loss if every position stops out on the same bar. For a book that
+        is one bet in nine names that is a plausible day; for a diversified one
+        it is a worst case with no probability attached. ``effective_heat`` is
+        the correlation-aware figure the cap actually governs, and this one may
+        legitimately exceed the cap when the book is genuinely diversified —
+        that is the room diversification buys.
         """
         return sum(s.risk_percentage for s in self.signals)
 
@@ -106,6 +110,7 @@ class ScanResult:
                 k: len(v) for k, v in sorted(self.signals_by_asset_class().items())
             },
             "portfolio_heat_pct": round(self.portfolio_heat, 3),
+            "effective_heat_pct": round(self.effective_heat, 3),
             "gross_notional_pct": round(
                 100.0 * sum(s.position_size_fraction for s in self.signals), 2
             ),
@@ -287,12 +292,17 @@ class MarketScanner:
         for rank, row in enumerate(rows, start=1):
             row.rank = rank
 
-        selected, cuts = self._construct(self._select(signals), dataset, snapshot, own_date)
+        selected, cuts, effective = self._construct(
+            self._select(signals), dataset, snapshot, own_date
+        )
         for row in rows:
             if row.symbol in cuts:
                 row.status = cuts[row.symbol]
 
-        result = ScanResult(date=last_date, regime=snapshot, rows=rows, signals=selected)
+        result = ScanResult(
+            date=last_date, regime=snapshot, rows=rows, signals=selected,
+            effective_heat=effective,
+        )
         by_class = ", ".join(
             f"{k} {len(v)}" for k, v in sorted(result.signals_by_asset_class().items())
         )
@@ -301,10 +311,12 @@ class MarketScanner:
         logger.info(
             "scan %s: %d instruments (%d ranked, %d stale), %d candidates "
             "(%d model, %d technical) -> %d orders [%s] "
-            "(risk: %d cut, %d resized; heat %.1f%% of equity, regime=%s)",
+            "(risk: %d cut, %d resized; heat %.1f%% effective / %.1f%% summed, "
+            "regime=%s)",
             last_date.date(), len(rows), len(fresh), len(stale), len(signals),
             len(signals) - n_tech, n_tech, len(selected), by_class or "none",
-            n_dropped, n_shrunk, result.portfolio_heat, snapshot.regime.value,
+            n_dropped, n_shrunk, result.effective_heat, result.portfolio_heat,
+            snapshot.regime.value,
         )
         return result
 
@@ -362,7 +374,7 @@ class MarketScanner:
         dataset: MarketDataset,
         snapshot: RegimeSnapshot,
         own_date: pd.Series,
-    ) -> tuple[list[Signal], dict[str, str]]:
+    ) -> tuple[list[Signal], dict[str, str], float]:
         """Size the order list as a portfolio instead of as N separate bets.
 
         The signal generator sizes every candidate standalone — the minimum of
@@ -380,7 +392,8 @@ class MarketScanner:
         within its limits and the set of them a single leveraged bet on one
         factor, which is what a correlation penalty is for.
 
-        Returns the approved orders and, per symbol, why anything was cut.
+        Returns the approved orders, why anything was cut, and the book's
+        correlation-aware heat in percent.
         """
         engine = RiskEngine(
             self._cfg.risk, universe=dataset.universe, returns=self._returns_wide(dataset)
@@ -396,7 +409,7 @@ class MarketScanner:
         cuts: dict[str, str] = {}
         symbol_weights: dict[str, float] = {}
         sector_weights: dict[str, float] = {}
-        open_risk = 0.0
+        symbol_risks: dict[str, float] = {}
 
         for s in sorted(ranked, key=lambda s: -s.confidence_score):
             requested = s.position_size_fraction
@@ -423,10 +436,11 @@ class MarketScanner:
                 equity=1.0,
                 n_positions=len(approved),
                 gross_exposure=sum(symbol_weights.values()),
-                open_risk_fraction=open_risk,
+                open_risk_fraction=sum(symbol_risks.values()),
                 symbol_weights=dict(symbol_weights),
                 sector_weights=dict(sector_weights),
                 strategy_drawdown=0.0,
+                symbol_risks=dict(symbol_risks),
             )
             granted = engine.approve(plan, state) * regime_mult
             if granted <= 1e-6:
@@ -444,10 +458,14 @@ class MarketScanner:
             sector_weights[sector] = (
                 sector_weights.get(sector, 0.0) + s.position_size_fraction
             )
-            open_risk += s.risk_percentage / 100.0
+            symbol_risks[s.symbol] = s.risk_percentage / 100.0
 
+        effective = (
+            100.0 * engine.effective_heat(symbol_risks, own_date[approved[0].symbol])
+            if approved else 0.0
+        )
         approved.sort(key=lambda s: (s.asset_class, -s.confidence_score))
-        return approved, cuts
+        return approved, cuts, effective
 
     @staticmethod
     def _rescale(s: Signal, scale: float) -> Signal:

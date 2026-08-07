@@ -19,7 +19,7 @@ Anything statistical must have happened strictly earlier in the pipeline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -112,6 +112,11 @@ class PortfolioSnapshot:
     symbol_weights: dict[str, float]
     sector_weights: dict[str, float]
     strategy_drawdown: float  # current drawdown of strategy equity
+    # Per-symbol risk-at-stop. ``open_risk_fraction`` is its sum, which is the
+    # loss if EVERY position stops out together — true for a book that is one
+    # bet, wildly pessimistic for one that is not. The risk engine needs the
+    # breakdown to tell those apart; without it, it falls back to the sum.
+    symbol_risks: dict[str, float] = field(default_factory=dict)
 
 
 class RiskApprover(Protocol):
@@ -403,16 +408,17 @@ class BacktestEngine:
             for sym, w in weights.items():
                 sector = self._universe.sector_of(sym)
                 sectors[sector] = sectors.get(sector, 0.0) + w
-        open_risk = sum(
-            p.size_fraction * abs(p.entry_price - p.stop) / p.entry_price
-            for p in positions.values()
-        )
+        risks = {
+            sym: p.size_fraction * abs(p.entry_price - p.stop) / p.entry_price
+            for sym, p in positions.items()
+        }
         return PortfolioSnapshot(
             equity=equity,
             n_positions=len(positions),
             gross_exposure=sum(abs(w) for w in weights.values()),
-            open_risk_fraction=open_risk,
+            open_risk_fraction=sum(risks.values()),
             symbol_weights=weights,
             sector_weights=sectors,
             strategy_drawdown=equity / max(peak_equity, 1e-9) - 1.0,
+            symbol_risks=risks,
         )

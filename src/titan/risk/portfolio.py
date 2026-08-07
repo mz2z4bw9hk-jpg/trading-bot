@@ -115,6 +115,7 @@ class RiskEngine:
         self._corr_window = corr_window
         self._var_window_bars = var_window_bars
         self._min_corr_obs = min_corr_obs
+        self._pair_cache: dict[tuple[str, str, pd.Timestamp], float] = {}
 
     # ------------------------------------------------------------------ #
 
@@ -184,6 +185,105 @@ class RiskEngine:
 
     # ------------------------------------------------------------------ #
 
+    def _pairwise(self, a: str, b: str, when: pd.Timestamp) -> float:
+        """Correlation between two symbols, or ``nan`` when unmeasurable."""
+        if self._returns is None:
+            return float("nan")
+        for s in (a, b):
+            if s not in self._returns.columns:
+                return float("nan")
+        when = _match_tz(when, self._returns.index)
+        key = (a, b, when)
+        if key not in self._pair_cache:
+            window = self._returns.loc[:when].tail(self._corr_window)
+            if len(window) < self._corr_window // 2:
+                self._pair_cache[key] = float("nan")
+            else:
+                self._pair_cache[key] = float(
+                    window[a].corr(window[b], min_periods=self._min_corr_obs)
+                )
+        return self._pair_cache[key]
+
+    def effective_heat(self, risks: Mapping[str, float], when: pd.Timestamp) -> float:
+        """Portfolio risk-at-stop as ``sqrt(r' C r)`` rather than ``sum(r)``.
+
+        The linear sum is the loss if every position stops out on the same bar.
+        For a book that is one bet in five names that is a realistic Tuesday;
+        for a genuinely diversified book it is a number with no probability
+        attached to it. Summing treats the two identically, so it overstates
+        the diversified book and — because the cap then binds on both at the
+        same total — leaves the correlation penalty with nothing to do but
+        redistribute size between names.
+
+        The quadratic form fixes exactly that. At perfect correlation
+        ``sqrt(r' C r)`` reduces to ``sum(r)``, so a concentrated book is
+        sized as it always was. Below perfect correlation it is smaller, and
+        the diversified book gets the room its structure has actually earned.
+
+        Any pair whose correlation cannot be measured is taken as 1.0 — the
+        conservative reading, and the one that degrades this back to the old
+        linear behaviour rather than to something optimistic.
+        """
+        symbols = [s for s, r in risks.items() if r > 0]
+        if not symbols:
+            return 0.0
+        r = np.array([risks[s] for s in symbols], dtype=float)
+        if len(symbols) == 1:
+            return float(r[0])
+        total = 0.0
+        for i, a in enumerate(symbols):
+            total += r[i] * r[i]
+            for j in range(i + 1, len(symbols)):
+                rho = self._pairwise(a, symbols[j], when)
+                if not np.isfinite(rho):
+                    rho = 1.0
+                total += 2.0 * rho * r[i] * r[j]
+        return float(np.sqrt(max(total, 0.0)))
+
+    def _heat_scale(
+        self,
+        plan: TradePlan,
+        snapshot: PortfolioSnapshot,
+        candidate_risk: float,
+        heat_cap: float,
+    ) -> float:
+        """Largest fraction of the candidate that keeps effective heat capped.
+
+        With ``A`` the book's current effective heat squared, ``x`` the cross
+        term against the candidate and ``c`` the candidate's own risk, adding
+        ``s`` of the candidate gives ``A + 2sx + s^2 c^2``. Solve that quadratic
+        at the cap rather than searching: it is exact, and it degrades to the
+        old linear ratio when everything is perfectly correlated.
+        """
+        held = {s: r for s, r in snapshot.symbol_risks.items() if r > 0}
+        if not held:
+            # No breakdown available (or an empty book): fall back to the sum,
+            # which is what the caller's open_risk_fraction already is.
+            available = heat_cap - snapshot.open_risk_fraction
+            if available <= 0:
+                return 0.0
+            return min(available / candidate_risk, 1.0)
+
+        when = plan.decision_date
+        a = self.effective_heat(held, when) ** 2
+        if a >= heat_cap**2:
+            return 0.0
+        cross = 0.0
+        for sym, r in held.items():
+            rho = self._pairwise(plan.symbol, sym, when)
+            if not np.isfinite(rho):
+                rho = 1.0
+            cross += rho * r
+        # c^2 s^2 + 2 (c * cross) s + (a - cap^2) <= 0
+        qa = candidate_risk**2
+        qb = 2.0 * candidate_risk * cross
+        qc = a - heat_cap**2
+        disc = qb * qb - 4.0 * qa * qc
+        if disc <= 0 or qa <= 0:
+            return 0.0
+        s = (-qb + float(np.sqrt(disc))) / (2.0 * qa)
+        return float(min(max(s, 0.0), 1.0))
+
     def approve(self, plan: TradePlan, snapshot: PortfolioSnapshot) -> float:
         """Return the approved size fraction for a candidate plan."""
         cfg = self._cfg
@@ -201,16 +301,18 @@ class RiskEngine:
         if size <= 1e-6:
             return 0.0
 
-        # Portfolio heat: total open risk stays under the cap.
+        # Portfolio heat: total open risk stays under the cap, measured with
+        # the book's correlation structure rather than by summing.
         entry_ref = plan.entry_ref if plan.entry_ref > 0 else plan.tp_price
         stop_frac = abs(entry_ref - plan.stop_price) / max(entry_ref, 1e-9)
         heat_cap = cfg.portfolio_heat_cap_pct / 100.0
         candidate_risk = size * stop_frac
-        available = heat_cap - snapshot.open_risk_fraction
-        if available <= 0:
+        if candidate_risk <= 0:
             return 0.0
-        if candidate_risk > available:
-            size *= available / candidate_risk
+        scale = self._heat_scale(plan, snapshot, candidate_risk, heat_cap)
+        if scale <= 0:
+            return 0.0
+        size *= scale
 
         # Sector concentration.
         if self._universe is not None:
