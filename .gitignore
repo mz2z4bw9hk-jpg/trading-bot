@@ -29,3 +29,4 @@ models_store/
 artifacts_run.log
 control_run.log
 artifacts_*/
+proposals/
