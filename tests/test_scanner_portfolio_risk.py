@@ -345,3 +345,79 @@ def test_an_unmeasurable_correlation_is_sized_as_correlated_not_as_diversifying(
 
     # Full correlation penalty: half the requested size, not all of it.
     assert approved == pytest.approx(0.05)
+
+
+def _vendor_frames():
+    """Exactly what yfinance hands back: equities in exchange-local tz, coins in UTC."""
+    eq = pd.DatetimeIndex(pd.bdate_range("2026-05-01", periods=60)).tz_localize(
+        "America/New_York"
+    )
+    cr = pd.DatetimeIndex(
+        pd.date_range("2026-05-01", periods=84, freq="D")
+    ).tz_localize("UTC")
+    rng = np.random.default_rng(0)
+    return {
+        sym: pd.DataFrame(
+            {"close": 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(idx))))}, index=idx
+        )
+        for sym, idx in [("PG", eq), ("LLY", eq), ("TRX-USD", cr)]
+    }
+
+
+def test_equity_and_crypto_daily_bars_land_on_the_same_calendar_grid():
+    """A US equity's daily bar is stamped 00:00 New York; a coin's is 00:00 UTC.
+
+    Concatenated raw, those are 04:00Z and 00:00Z — different instants that
+    merge on nothing. The union index came out ~2x too long, every tail(window)
+    covered half the history it claimed, and no equity/crypto pair shared a
+    single observation, so cross-asset correlation was undefined rather than
+    weak. A daily bar denotes a session, not a moment; the grid is the date.
+    """
+    from titan.risk.portfolio import build_returns_matrix
+
+    frames = _vendor_frames()
+    returns = build_returns_matrix(frames, "1d")
+    window = returns.tail(63)
+
+    def overlap(a: str, b: str) -> int:
+        return int((window[a].notna() & window[b].notna()).sum())
+
+    # 84 distinct calendar dates, not 60 + 84 unmerged rows.
+    assert len(returns) == 84
+    assert overlap("PG", "TRX-USD") > 40, "cross-asset correlation still unmeasurable"
+    assert overlap("PG", "LLY") > 40, "same-class window still halved by the bloat"
+
+
+def test_intraday_bars_are_not_collapsed_onto_the_day():
+    """The date grid is right for sessions and destroys intraday observations."""
+    from titan.risk.portfolio import build_returns_matrix
+
+    idx = pd.DatetimeIndex(
+        pd.date_range("2026-05-01 13:30", periods=40, freq="h", tz="UTC")
+    )
+    frames = {"X": pd.DataFrame({"close": np.linspace(100, 110, len(idx))}, index=idx)}
+
+    assert len(build_returns_matrix(frames, "1h")) == len(idx)
+
+
+def test_a_naive_decision_date_can_still_slice_a_tz_aware_matrix():
+    """The matrix is normalised to UTC; `when` arrives however the vendor stamped it."""
+    from titan.backtest.engine import PortfolioSnapshot, TradePlan
+    from titan.core.config import RiskConfig
+    from titan.risk.portfolio import RiskEngine, build_returns_matrix
+
+    returns = build_returns_matrix(_vendor_frames(), "1d")
+    engine = RiskEngine(
+        RiskConfig(max_position_weight=1.0, portfolio_heat_cap_pct=100.0,
+                   max_sector_weight=1.0),
+        returns=returns,
+    )
+    plan = TradePlan(symbol="PG", decision_date=pd.Timestamp("2026-08-01"),
+                     size_fraction=0.10, stop_price=96.0, tp_price=106.0,
+                     max_holding_bars=5, entry_ref=100.0)
+    snapshot = PortfolioSnapshot(
+        equity=1.0, n_positions=1, gross_exposure=0.1, open_risk_fraction=0.0,
+        symbol_weights={"TRX-USD": 0.1}, sector_weights={}, strategy_drawdown=0.0,
+    )
+
+    assert engine.approve(plan, snapshot) > 0

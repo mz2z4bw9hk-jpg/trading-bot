@@ -17,16 +17,70 @@ sim-vs-prod drift.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 
 from titan.backtest.engine import PortfolioSnapshot, TradePlan
 from titan.core.config import RiskConfig
 from titan.core.log import get_logger
+from titan.core.timeframe import INTRADAY_TIMEFRAMES
 from titan.core.types import Universe
 from titan.risk.sizing import drawdown_throttle
 
 logger = get_logger(__name__)
+
+
+def _match_tz(when: pd.Timestamp, index: pd.Index) -> pd.Timestamp:
+    """Align a timestamp's tz-awareness to an index's, so slicing is legal."""
+    aware = getattr(index, "tz", None) is not None
+    if aware and when.tz is None:
+        return when.tz_localize("UTC")
+    if not aware and when.tz is not None:
+        return when.tz_convert("UTC").tz_localize(None)
+    return when
+
+
+def build_returns_matrix(
+    frames: Mapping[str, pd.DataFrame], timeframe: str = "1d"
+) -> pd.DataFrame:
+    """Wide (date x symbol) returns on a COMMON calendar grid.
+
+    Three things have to happen here, and skipping any one of them silently
+    breaks the correlation estimate rather than failing.
+
+    **Difference before aligning.** Aligning closes on a union index and
+    calling ``pct_change`` afterwards makes every post-gap return NaN — an
+    equity's Monday reads back to a NaN weekend row. That deletes precisely
+    the gap returns, which is where correlated names move together hardest.
+
+    **Put every index in UTC.** yfinance stamps a US equity's daily bar in
+    ``America/New_York`` and a coin's in UTC, so the same trading day arrives
+    as 04:00Z and 00:00Z. Concatenating those merges nothing: the union index
+    comes out roughly twice as long as it should, every ``tail(window)`` covers
+    half the history it claims, and no equity/crypto pair shares a single
+    observation. Cross-asset correlation was not weak, it was undefined.
+
+    **Normalise to the day when the timeframe is daily or coarser.** UTC alone
+    does not fix the above — 04:00Z and 00:00Z are still different instants. A
+    daily bar denotes a session, not a moment, so the grid is the date.
+    Intraday bars genuinely are moments and align on the hour once in UTC, so
+    they are left alone.
+    """
+    daily_or_coarser = timeframe not in INTRADAY_TIMEFRAMES
+    series: dict[str, pd.Series] = {}
+    for symbol, frame in frames.items():
+        r = frame["close"].pct_change()
+        idx = pd.DatetimeIndex(r.index)
+        idx = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+        if daily_or_coarser:
+            idx = idx.normalize()
+        r = pd.Series(r.to_numpy(), index=idx, name=symbol)
+        # Normalising can collide bars that were distinct instants; keep the
+        # last, which is the one the session actually closed on.
+        series[symbol] = r[~r.index.duplicated(keep="last")]
+    return pd.concat(series, axis=1, sort=True)
 
 
 class RiskEngine:
@@ -105,6 +159,10 @@ class RiskEngine:
                 "correlated with the book", symbol,
             )
             return float("nan")
+        # The matrix index is normalised to UTC; `when` arrives from the panel
+        # in whatever the vendor stamped. Match the index's tz-awareness or the
+        # slice raises rather than returning the wrong window.
+        when = _match_tz(when, self._returns.index)
         window = self._returns.loc[:when].tail(self._corr_window)
         if len(window) < self._corr_window // 2:
             return float("nan")

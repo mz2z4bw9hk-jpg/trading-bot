@@ -46,7 +46,7 @@ from titan.labels.triple_barrier import build_label_panel
 from titan.models.cv import PurgedWalkForward, assert_no_leakage
 from titan.models.ensemble import CalibratedEnsemble
 from titan.regime.detector import RegimeDetector
-from titan.risk.portfolio import RiskEngine
+from titan.risk.portfolio import RiskEngine, build_returns_matrix
 from titan.signals.analogues import AnalogueIndex
 from titan.signals.generator import SignalGenerator
 from titan.signals.schema import Signal
@@ -357,14 +357,7 @@ class WalkForwardRunner:
         # ---- OOS portfolio simulation --------------------------------------
         regimes = pd.concat(regime_tables).sort_index()
         regimes = regimes[~regimes.index.duplicated(keep="first")]
-        # Differenced per symbol on its own index, then aligned. Aligning first
-        # makes every post-gap return NaN (an equity's Monday reads back to a
-        # NaN weekend row), which silently drops the weekend-gap moves the
-        # correlation penalty most needs to see.
-        returns_wide = pd.concat(
-            {sym: f["close"].pct_change() for sym, f in dataset.frames.items()},
-            axis=1, sort=True,
-        )
+        returns_wide = build_returns_matrix(dataset.frames, cfg.data.timeframe)
         risk_engine = RiskEngine(
             cfg.risk,
             universe=dataset.universe,
