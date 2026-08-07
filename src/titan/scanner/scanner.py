@@ -351,15 +351,21 @@ class MarketScanner:
     def _returns_wide(self, dataset: MarketDataset) -> pd.DataFrame:
         """Per-bar returns, date x symbol, for the correlation estimate."""
         if self._returns_cache is None:
-            # sort=True is not cosmetic: instruments trade on different
-            # calendars, so the union index arrives interleaved, and the
-            # correlation window slices it with .loc[:when].tail(n). An
-            # unsorted index makes that slice silently wrong.
-            close = pd.concat(
-                {sym: f["close"] for sym, f in dataset.frames.items()},
+            # Each symbol's return is computed on ITS OWN index, before the
+            # frames are aligned. Aligning closes first and differencing after
+            # silently destroys every return that follows a calendar gap: on a
+            # union index an equity's Saturday close is NaN, so Monday's
+            # pct_change reads from NaN and is NaN too. That drops ~19% of
+            # equity observations, and not at random — it drops precisely the
+            # weekend-gap returns, which is where correlated names move
+            # together hardest. The correlation estimate was blind to them.
+            #
+            # sort=True because the correlation window slices with
+            # .loc[:when].tail(n); an unsorted union index makes that wrong.
+            self._returns_cache = pd.concat(
+                {sym: f["close"].pct_change() for sym, f in dataset.frames.items()},
                 axis=1, sort=True,
             )
-            self._returns_cache = close.pct_change()
         return self._returns_cache
 
     def _construct(

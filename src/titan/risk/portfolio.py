@@ -38,6 +38,7 @@ class RiskEngine:
         regimes: pd.Series | None = None,
         corr_window: int = 63,
         var_window_bars: int = 252,
+        min_corr_obs: int = 20,
     ) -> None:
         """
         Parameters
@@ -49,6 +50,9 @@ class RiskEngine:
         var_window_bars:
             Lookback for historical VaR/CVaR — one year expressed in bars, so
             it must track the run's timeframe rather than assume daily.
+        min_corr_obs:
+            Overlapping observations a pair needs before its correlation is
+            believed. Below it the pair is unmeasured, not uncorrelated.
         """
         self._cfg = cfg
         self._universe = universe
@@ -56,6 +60,7 @@ class RiskEngine:
         self._regimes = regimes
         self._corr_window = corr_window
         self._var_window_bars = var_window_bars
+        self._min_corr_obs = min_corr_obs
 
     # ------------------------------------------------------------------ #
 
@@ -74,19 +79,50 @@ class RiskEngine:
     def _avg_correlation_to_book(
         self, symbol: str, holdings: list[str], when: pd.Timestamp
     ) -> float:
-        if self._returns is None or not holdings or symbol not in self._returns.columns:
+        """Mean correlation to the current book, or ``nan`` if unmeasurable.
+
+        The distinction between "uncorrelated" and "not measured" is the whole
+        point of returning ``nan`` here. Both used to come back as 0.0, so a
+        pair with no overlapping history was credited as a perfect diversifier
+        and sized accordingly — the fail-open direction, and silent.
+
+        ``min_periods`` is what makes that distinction possible. Without it a
+        pair with one overlapping observation returns a correlation computed
+        from a zero-variance slice, which is both meaningless and noisy enough
+        to emit numpy divide-by-zero warnings from inside ``cov``.
+        """
+        if self._returns is None:
+            # No return matrix was supplied: the penalty is not configured, as
+            # opposed to configured and unmeasurable. Charging for it here
+            # would silently halve every size for callers that never asked for
+            # the feature.
             return 0.0
+        if not holdings:
+            return 0.0        # an empty book correlates with nothing; not a gap
+        if symbol not in self._returns.columns:
+            logger.warning(
+                "%s: no return history in the risk matrix; sizing it as fully "
+                "correlated with the book", symbol,
+            )
+            return float("nan")
         window = self._returns.loc[:when].tail(self._corr_window)
         if len(window) < self._corr_window // 2:
-            return 0.0
+            return float("nan")
         cand = window[symbol]
-        corrs = []
-        for h in holdings:
-            if h in window.columns:
-                c = cand.corr(window[h])
-                if np.isfinite(c):
-                    corrs.append(c)
-        return float(np.mean(corrs)) if corrs else 0.0
+        corrs = [
+            c
+            for h in holdings
+            if h in window.columns
+            and np.isfinite(c := cand.corr(window[h], min_periods=self._min_corr_obs))
+        ]
+        if not corrs:
+            logger.warning(
+                "%s: correlation to a %d-name book is unmeasurable (<%d overlapping "
+                "observations); sizing it as fully correlated",
+                symbol, len(holdings), self._min_corr_obs,
+            )
+            return float("nan")
+        return float(np.mean(corrs))
 
     # ------------------------------------------------------------------ #
 
@@ -127,10 +163,16 @@ class RiskEngine:
                 return 0.0
             size = min(size, room)
 
-        # Correlation penalty: up to 50% haircut above the threshold.
+        # Correlation penalty: up to 50% haircut above the threshold. An
+        # unmeasurable correlation takes the full haircut rather than none —
+        # the penalty is bounded at half the position, so the conservative
+        # reading costs size, while the permissive one costs the entire point
+        # of having the penalty.
         avg_corr = self._avg_correlation_to_book(
             plan.symbol, list(snapshot.symbol_weights), plan.decision_date
         )
+        if not np.isfinite(avg_corr):
+            avg_corr = 1.0
         if avg_corr > cfg.correlation_penalty_threshold:
             excess = (avg_corr - cfg.correlation_penalty_threshold) / max(
                 1.0 - cfg.correlation_penalty_threshold, 1e-9

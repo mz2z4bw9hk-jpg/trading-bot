@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from titan.core.config import TitanConfig
 from titan.core.types import Regime, Side, TradeGrade, VolState
@@ -282,3 +283,65 @@ def test_rejected_orders_say_the_portfolio_was_the_reason():
 
     statuses = [r.status for r in result.rows]
     assert any("portfolio risk" in s for s in statuses), statuses
+
+
+def test_returns_are_differenced_before_alignment_not_after():
+    """A post-gap return must survive into the correlation matrix.
+
+    Aligning closes on a union index and differencing afterwards makes an
+    equity's Monday read back to a NaN weekend row, so it becomes NaN too.
+    That silently deletes ~19% of equity observations, and specifically the
+    weekend-gap moves — the ones where correlated names move together hardest,
+    and therefore the ones the correlation penalty most needs.
+    """
+    from titan.scanner.scanner import MarketScanner
+
+    eq = pd.DatetimeIndex(pd.bdate_range("2024-01-01", periods=60), tz="UTC")
+    cr = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=84, freq="D", tz="UTC"))
+    rng = np.random.default_rng(5)
+    frames = {}
+    for sym, idx in [("AAPL", eq), ("BTC-USD", cr)]:
+        close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, len(idx))))
+        frames[sym] = pd.DataFrame({"close": close}, index=idx)
+
+    scanner = MarketScanner(
+        TitanConfig(), ensemble=_StubEnsemble(), selected_features=["f0"],
+        generator=_FixedSizeGenerator(), detector=_StubDetector(),
+    )
+    returns = scanner._returns_wide(_StubDataset(frames))
+
+    # One NaN per symbol (its first bar), and not one more.
+    assert int(returns["AAPL"].notna().sum()) == len(eq) - 1
+    assert int(returns["BTC-USD"].notna().sum()) == len(cr) - 1
+
+
+def test_an_unmeasurable_correlation_is_sized_as_correlated_not_as_diversifying():
+    """"Not measured" and "uncorrelated" must not collapse to the same number."""
+    from titan.backtest.engine import PortfolioSnapshot, TradePlan
+    from titan.core.config import RiskConfig
+    from titan.risk.portfolio import RiskEngine
+
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-01", periods=80), tz="UTC")
+    rng = np.random.default_rng(7)
+    returns = pd.DataFrame(
+        {"HELD": rng.normal(0, 0.01, len(idx)), "NEW": rng.normal(0, 0.01, len(idx))},
+        index=idx,
+    )
+    # NEW has only three observations overlapping the window.
+    returns.loc[idx[:-3], "NEW"] = np.nan
+
+    cfg = RiskConfig(max_position_weight=1.0, portfolio_heat_cap_pct=100.0,
+                     max_sector_weight=1.0)
+    engine = RiskEngine(cfg, returns=returns)
+    plan = TradePlan(symbol="NEW", decision_date=idx[-1], size_fraction=0.10,
+                     stop_price=96.0, tp_price=106.0, max_holding_bars=5,
+                     entry_ref=100.0)
+    snapshot = PortfolioSnapshot(
+        equity=1.0, n_positions=1, gross_exposure=0.1, open_risk_fraction=0.0,
+        symbol_weights={"HELD": 0.1}, sector_weights={}, strategy_drawdown=0.0,
+    )
+
+    approved = engine.approve(plan, snapshot)
+
+    # Full correlation penalty: half the requested size, not all of it.
+    assert approved == pytest.approx(0.05)

@@ -357,10 +357,14 @@ class WalkForwardRunner:
         # ---- OOS portfolio simulation --------------------------------------
         regimes = pd.concat(regime_tables).sort_index()
         regimes = regimes[~regimes.index.duplicated(keep="first")]
-        close_wide = pd.concat(
-            {sym: f["close"] for sym, f in dataset.frames.items()}, axis=1, sort=True,
+        # Differenced per symbol on its own index, then aligned. Aligning first
+        # makes every post-gap return NaN (an equity's Monday reads back to a
+        # NaN weekend row), which silently drops the weekend-gap moves the
+        # correlation penalty most needs to see.
+        returns_wide = pd.concat(
+            {sym: f["close"].pct_change() for sym, f in dataset.frames.items()},
+            axis=1, sort=True,
         )
-        returns_wide = close_wide.pct_change()
         risk_engine = RiskEngine(
             cfg.risk,
             universe=dataset.universe,
