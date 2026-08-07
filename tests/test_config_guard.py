@@ -112,3 +112,59 @@ def test_registry_roundtrips_fingerprint(tmp_path):
     version = registry.save(joblib.__version__, config_fingerprint="abc123def456")
     _, manifest = registry.load(version)
     assert manifest.config_fingerprint == "abc123def456"
+
+
+def test_scan_prefers_this_configs_champion_over_the_global_one(tmp_path):
+    """Regression: a champion from another world used to shadow the right model.
+
+    Two configs, each with its own promoted model. Scanning world B must pick
+    B's model even though A's is the later version and so wins any global
+    "latest production" tie-break.
+    """
+    cfg_a = load_config(_cfg_yaml(tmp_path, 0.004, "world_a"), {})
+    cfg_b = load_config(_cfg_yaml(tmp_path, 0.010, "world_b"), {})
+    fp_a, fp_b = research_fingerprint(cfg_a), research_fingerprint(cfg_b)
+    registry = ModelRegistry(tmp_path / "models")
+
+    v_b = registry.save({"stub": "b"}, config_fingerprint=fp_b)
+    registry.promote(v_b)
+    v_a = registry.save({"stub": "a"}, config_fingerprint=fp_a)
+    registry.promote(v_a)
+
+    assert v_a > v_b                                  # A is the newer version
+    assert registry.production_version() == v_a       # ...and the global champion
+    assert registry.production_version(fp_b) == v_b   # but B still owns its world
+    # promoting into world A must not have retired world B's champion
+    assert registry.production_version(fp_a) == v_a
+    assert registry.load(None, fingerprint=fp_b)[0] == {"stub": "b"}
+
+
+def test_mismatch_error_names_a_model_that_would_work(tmp_path, capsys):
+    """The refusal is only useful if it says what to run instead."""
+    cfg_a = _cfg_yaml(tmp_path, 0.004, "world_a")
+    cfg_b = _cfg_yaml(tmp_path, 0.010, "world_b")
+    registry = ModelRegistry(tmp_path / "models")
+    stale = registry.save({"stub": True}, config_fingerprint=research_fingerprint(
+        load_config(cfg_a, {})))
+    registry.promote(stale)
+    # a candidate for world B exists but was never promoted
+    usable = registry.save({"stub": True}, config_fingerprint=research_fingerprint(
+        load_config(cfg_b, {})))
+
+    assert main(["scan", "--config", str(cfg_b)]) == 2
+    err = capsys.readouterr().err
+    assert "CONFIG MISMATCH" in err
+    assert f"--model {usable}" in err
+
+
+def test_mismatch_error_says_so_when_nothing_matches(tmp_path, capsys):
+    cfg_a = _cfg_yaml(tmp_path, 0.004, "world_a")
+    cfg_b = _cfg_yaml(tmp_path, 0.010, "world_b")
+    registry = ModelRegistry(tmp_path / "models")
+    registry.promote(registry.save({"stub": True}, config_fingerprint=research_fingerprint(
+        load_config(cfg_a, {}))))
+
+    assert main(["scan", "--config", str(cfg_b)]) == 2
+    err = capsys.readouterr().err
+    assert "No model in the registry was validated on this config" in err
+    assert "--allow-config-mismatch" in err

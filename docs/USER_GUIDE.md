@@ -160,6 +160,18 @@ the incumbent through the statistical promotion gate — a challenger with a
 non-significant edge or a degraded drawdown stays shelved, with reasons
 recorded in `models_store/index.json`.
 
+**"Production" means production *for one config*.** The registry keeps a
+champion per research fingerprint, not one champion overall, because the
+promotion gate compares two return series bar by bar and two different
+universes share no bars to compare. So `validate` on a config that has never
+had a champion promotes its first model outright, and `scan --config X` loads
+X's champion even when a newer model from another config sits in the registry.
+Without that scoping one strong model from an old config deadlocks every new
+one: nothing can beat it (the comparison is meaningless), and the config guard
+then refuses to scan with it (correctly). `titan info --config <cfg>` reports
+`production_for_config` and `usable_for_config` — the two numbers that answer
+"which model actually runs when I scan this".
+
 ### Sharing results without a server
 
 `titan export` writes `artifacts/titan_dashboard.html`: the full dashboard
@@ -808,7 +820,7 @@ gate decide. Never hand-promote.
 | `training window too small` | not enough history for `cv.min_train_bars` / internal folds — more bars or fewer folds |
 | Instrument missing from results | failed QC; see `artifacts/quality.json` and the log line explaining why |
 | Yahoo fetch fails | no network egress from your environment; use `csv` |
-| `CONFIG MISMATCH` on scan/resolve | you validated with one `--config` and scanned with another (bare `titan scan` = `configs/default.yaml`) — pass the config the model was validated with. Changing `data.timeframe` changes the fingerprint too |
+| `CONFIG MISMATCH` on scan/resolve | you validated with one `--config` and scanned with another (bare `titan scan` = `configs/default.yaml`) — pass the config the model was validated with. Changing `data.timeframe` changes the fingerprint too. The error names a registry version that *does* match if one exists: scan with `--model vNNN`, or re-run `validate` under this config to make it that config's champion |
 | `not validated research on this platform` | `1m`/`5m` refused by design — see §6b before setting `data.acknowledge_unvalidated_timeframe` |
 | `Yahoo keeps at most N days` | vendor history cap for that interval; the run continues on what exists, but check `quality.json` and the regime breakdown |
 | `calendar mismatch` warning | the resolved bars-per-year disagrees with the loaded data (usually a 24/7 book on a session calendar) — set `data.bars_per_year` |

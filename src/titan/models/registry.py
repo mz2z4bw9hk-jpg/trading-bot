@@ -5,6 +5,17 @@ config fingerprint, data window). Promotion to production is *mechanical*
 here; the statistical gate lives in :mod:`titan.monitor.compare` — a
 challenger must beat production out-of-sample with statistical significance
 before anyone calls :meth:`ModelRegistry.promote`.
+
+**"Production" is scoped to a research world, not to the registry.** A model
+is only meaningful against the config fingerprint it was validated on, so one
+store holds one champion *per fingerprint* rather than one champion overall.
+Without that scoping a registry that has ever held a strong model from another
+universe deadlocks every other config: the champion/challenger bootstrap
+compares return series from two different markets, the gate rejects on a
+comparison that never meant anything, and the config guard then refuses to
+scan with the incumbent it just protected. Passing a fingerprint to
+:meth:`production_version` or :meth:`load` asks the only answerable question —
+"what is the best model *for this world*".
 """
 
 from __future__ import annotations
@@ -24,6 +35,18 @@ logger = get_logger(__name__)
 STATUS_CANDIDATE = "candidate"
 STATUS_PRODUCTION = "production"
 STATUS_RETIRED = "retired"
+
+
+def fingerprint_matches(recorded: str, active: str) -> bool:
+    """Can a model recorded under ``recorded`` be used against ``active``?
+
+    Kept deliberately permissive in one direction: a manifest written before
+    fingerprints existed records nothing, and an absent fingerprint is not
+    evidence of a mismatch, so it matches anything. The scan guard in the CLI
+    lets those through for the same reason, and both call this so the two
+    cannot drift apart.
+    """
+    return not recorded or recorded == active
 
 
 @dataclass(slots=True)
@@ -96,13 +119,24 @@ class ModelRegistry:
         logger.info("saved model %s (%s)", version, description or "no description")
         return version
 
-    def load(self, version: str | None = None) -> tuple[Any, ModelManifest]:
+    def load(
+        self, version: str | None = None, fingerprint: str | None = None
+    ) -> tuple[Any, ModelManifest]:
+        """Load a bundle by version, or the production model when none given.
+
+        ``fingerprint`` narrows the default to the champion of that research
+        world; it is ignored when an explicit ``version`` is named, because a
+        caller asking for a specific model has already decided.
+        """
         index = self._read_index()
         if version is None:
-            production = [v for v, m in index.items() if m.get("status") == STATUS_PRODUCTION]
-            if not production:
-                raise LookupError("no production model in registry")
-            version = sorted(production)[-1]
+            version = self.production_version(fingerprint)
+            if version is None:
+                raise LookupError(
+                    "no production model in registry"
+                    if fingerprint is None
+                    else f"no production model for research config {fingerprint}"
+                )
         if version not in index:
             raise LookupError(f"unknown model version: {version}")
         model = joblib.load(self._dir / version / "model.joblib")
@@ -111,19 +145,28 @@ class ModelRegistry:
     # ------------------------------------------------------------------ #
 
     def promote(self, version: str) -> None:
-        """Make ``version`` production; demote any existing production model.
+        """Make ``version`` production; demote the champion it replaces.
 
         Callers must first pass the statistical comparison gate
         (:func:`titan.monitor.compare.compare_strategies`). Promoting an
         unproven model by hand defeats the whole platform.
+
+        Only the champion of the *same* research world is retired, on exact
+        fingerprint equality. A model validated elsewhere was never in this
+        contest and losing a race it did not run should not cost it its status
+        — that is what let one config's incumbent block every other config.
         """
         index = self._read_index()
         if version not in index:
             raise LookupError(f"unknown model version: {version}")
+        fp = index[version].get("config_fingerprint", "")
         for v, m in index.items():
-            if m.get("status") == STATUS_PRODUCTION and v != version:
-                m["status"] = STATUS_RETIRED
-                logger.info("retired previous production model %s", v)
+            if v == version or m.get("status") != STATUS_PRODUCTION:
+                continue
+            if m.get("config_fingerprint", "") != fp:
+                continue
+            m["status"] = STATUS_RETIRED
+            logger.info("retired previous production model %s", v)
         index[version]["status"] = STATUS_PRODUCTION
         self._write_index(index)
         manifest_path = self._dir / version / "manifest.json"
@@ -136,7 +179,33 @@ class ModelRegistry:
         index = self._read_index()
         return [ModelManifest(**m) for _, m in sorted(index.items())]
 
-    def production_version(self) -> str | None:
+    def production_version(self, fingerprint: str | None = None) -> str | None:
+        """Latest production model, optionally within one research world.
+
+        With ``fingerprint``, returns the champion for that config and None if
+        the world has never had one — which is the signal to promote outright
+        rather than to run a comparison against a stranger.
+        """
         index = self._read_index()
-        production = [v for v, m in index.items() if m.get("status") == STATUS_PRODUCTION]
+        production = [
+            v for v, m in index.items()
+            if m.get("status") == STATUS_PRODUCTION
+            and (
+                fingerprint is None
+                or fingerprint_matches(m.get("config_fingerprint", ""), fingerprint)
+            )
+        ]
         return sorted(production)[-1] if production else None
+
+    def versions_for_fingerprint(self, fingerprint: str) -> list[str]:
+        """Every non-retired version usable against ``fingerprint``, oldest first.
+
+        Exists so a refused scan can name the models that *would* work instead
+        of only reporting the one that would not.
+        """
+        index = self._read_index()
+        return sorted(
+            v for v, m in index.items()
+            if m.get("status") != STATUS_RETIRED
+            and fingerprint_matches(m.get("config_fingerprint", ""), fingerprint)
+        )

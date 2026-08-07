@@ -116,20 +116,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
         "max_drawdown": summary["max_drawdown"],
         "n_signals": len(report.signals),
     }
+    fingerprint = research_fingerprint(cfg)
     version = registry.save(
         bundle,
         metrics=metrics,
         feature_names=artifacts["selected"],
         description=f"walk-forward {len(report.folds)} folds on {cfg.data.provider}",
-        config_fingerprint=research_fingerprint(cfg),
+        config_fingerprint=fingerprint,
         train_start=str(report.folds[0].test_start) if report.folds else "",
         train_end=str(report.folds[-1].test_end) if report.folds else "",
     )
 
-    production = registry.production_version()
+    # Champion/challenger is only meaningful inside one research world: the
+    # paired bootstrap differences two return series bar by bar, and two
+    # different universes share no bars to difference. Compare against this
+    # config's incumbent, and promote outright when it has none.
+    production = registry.production_version(fingerprint)
     if production is None:
         registry.promote(version)
-        logger.info("no production model existed; %s promoted", version)
+        logger.info(
+            "no production model for research config %s; %s promoted",
+            fingerprint, version,
+        )
     else:
         prod_bundle, prod_manifest = registry.load(production)
         comparison = compare_returns(oos_returns, prod_bundle["oos_returns"], seed=cfg.run.seed)
@@ -178,7 +186,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _config_mismatch_error(manifest, cfg: TitanConfig, allow: bool) -> str | None:
+def _config_mismatch_error(
+    manifest, cfg: TitanConfig, allow: bool, registry=None
+) -> str | None:
     """Refuse to run inference when the active config describes a different
     world than the one the production model was validated on.
 
@@ -186,9 +196,16 @@ def _config_mismatch_error(manifest, cfg: TitanConfig, allow: bool) -> str | Non
     plausible-looking, meaningless numbers — the exact failure mode this
     platform exists to prevent. Old manifests without a fingerprint skip the
     check (nothing to compare).
+
+    When ``registry`` is supplied the refusal names the versions that *do*
+    match, because "this model is wrong for your config" and "nothing in the
+    registry is right for your config" call for opposite next steps and the
+    user cannot tell which they are in from the fingerprints alone.
     """
+    from titan.models.registry import fingerprint_matches
+
     fp = research_fingerprint(cfg)
-    if not manifest.config_fingerprint or manifest.config_fingerprint == fp:
+    if fingerprint_matches(manifest.config_fingerprint, fp):
         return None
     if allow:
         logger.warning(
@@ -196,13 +213,22 @@ def _config_mismatch_error(manifest, cfg: TitanConfig, allow: bool) -> str | Non
             manifest.version, manifest.config_fingerprint, fp,
         )
         return None
+    usable = registry.versions_for_fingerprint(fp) if registry is not None else []
+    remedy = (
+        f"A model in the registry DOES match this config: {', '.join(usable)}.\n"
+        f"Scan with `--model {usable[-1]}`, or re-run `titan validate` under this "
+        f"config to make it the champion for it."
+        if usable else
+        "No model in the registry was validated on this config — run `titan validate` "
+        "with it first. Or pass the SAME --config used for the validate run (note: no "
+        "--config means configs/default.yaml), or override with --allow-config-mismatch "
+        "if you truly know better."
+    )
     return (
         f"CONFIG MISMATCH: production model {manifest.version} was validated on a different "
         f"research configuration (fingerprint {manifest.config_fingerprint}, active {fp}).\n"
         f"Numbers from a model scanned against a world it never saw are meaningless.\n"
-        f"Pass the SAME --config used for `titan validate` (note: no --config means "
-        f"configs/default.yaml), re-validate under this config, or override with "
-        f"--allow-config-mismatch if you truly know better."
+        f"{remedy}"
     )
 
 
@@ -219,7 +245,9 @@ def _baseline_brier(cfg: TitanConfig) -> float:
 
     try:
         registry = ModelRegistry(cfg.model.store_dir)
-        version = registry.production_version()
+        # This config's champion: the baseline has to come from the model whose
+        # calibration the live predictions are actually drifting away from.
+        version = registry.production_version(research_fingerprint(cfg))
         if version is None:
             return DEFAULT_BASELINE_BRIER
         _, manifest = registry.load(version)
@@ -278,8 +306,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
     cfg = _load_cfg(args)
     registry = ModelRegistry(cfg.model.store_dir)
     wanted = getattr(args, "model", None)
+    # Prefer this config's own champion. Falling back to the global one keeps
+    # the guard below as the thing that reports a genuine mismatch, with its
+    # explanation, rather than a bare "no production model" from the registry.
+    version = wanted or registry.production_version(research_fingerprint(cfg)) \
+        or registry.production_version()
     try:
-        bundle, manifest = registry.load(wanted)
+        bundle, manifest = registry.load(version)
     except LookupError as exc:
         print(
             f"model {wanted!r} not found in the registry: {exc}" if wanted
@@ -287,7 +320,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch)
+    error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch, registry)
     if error:
         print(error, file=sys.stderr)
         return 2
@@ -413,10 +446,15 @@ def cmd_track(args: argparse.Namespace) -> int:
         from titan.models.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.model.store_dir)
-        production = registry.production_version()
+        production = (
+            registry.production_version(research_fingerprint(cfg))
+            or registry.production_version()
+        )
         if production is not None:
             _, manifest = registry.load(production)
-            error = _config_mismatch_error(manifest, cfg, args.allow_config_mismatch)
+            error = _config_mismatch_error(
+                manifest, cfg, args.allow_config_mismatch, registry
+            )
             if error:
                 print(error, file=sys.stderr)
                 return 2
@@ -633,12 +671,18 @@ def cmd_info(args: argparse.Namespace) -> int:
         s = PaperTrackingStore(store_path).summary(_baseline_brier(cfg))
         tracking = {k: s[k] for k in
                     ("n_predictions", "n_resolved", "n_open", "hit_rate", "cusum_alarm")}
+    fingerprint = research_fingerprint(cfg)
     print(json.dumps({
         "version": __version__,
         "provider": cfg.data.provider,
         "universe": [i.symbol for i in cfg.universe.instruments],
         "benchmark": cfg.universe.benchmark,
         "models": [m.to_dict() for m in registry.history()],
+        # Three answers, because "which model runs when I scan THIS config" is
+        # the question, and the global champion is not it.
+        "config_fingerprint": fingerprint,
+        "production_for_config": registry.production_version(fingerprint),
+        "usable_for_config": registry.versions_for_fingerprint(fingerprint),
         "production": registry.production_version(),
         "paper_tracking": tracking,
         "artifacts_dir": str(Path(cfg.run.artifacts_dir).resolve()),

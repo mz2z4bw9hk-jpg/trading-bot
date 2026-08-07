@@ -44,6 +44,77 @@ def test_registry_candidate_status(tmp_path):
     assert manifest.status == STATUS_CANDIDATE
 
 
+def test_production_is_scoped_per_research_world(tmp_path):
+    """One champion per config fingerprint, not one per registry."""
+    reg = ModelRegistry(tmp_path / "store")
+    a1 = reg.save({"m": "a1"}, config_fingerprint="world_a")
+    b1 = reg.save({"m": "b1"}, config_fingerprint="world_b")
+    reg.promote(a1)
+    reg.promote(b1)
+
+    assert reg.production_version("world_a") == a1
+    assert reg.production_version("world_b") == b1
+    # neither promotion retired the other world's champion
+    assert {m.version: m.status for m in reg.history()}[a1] == STATUS_PRODUCTION
+
+    a2 = reg.save({"m": "a2"}, config_fingerprint="world_a")
+    reg.promote(a2)
+    history = {m.version: m.status for m in reg.history()}
+    assert history[a1] == STATUS_RETIRED      # same world: replaced
+    assert history[b1] == STATUS_PRODUCTION   # other world: untouched
+    assert reg.production_version("world_a") == a2
+
+
+def test_a_foreign_champion_does_not_block_a_new_world(tmp_path):
+    """The deadlock this scoping exists to break.
+
+    `validate` promotes outright when its config has no incumbent, and runs the
+    champion/challenger bootstrap only when it does. Globally there IS a
+    production model here; for world B there is not, so B's first model must be
+    promoted rather than bootstrapped against a return series from another
+    market — a comparison with no shared bars, which the gate can only reject.
+    """
+    reg = ModelRegistry(tmp_path / "store")
+    reg.promote(reg.save({"m": "a"}, config_fingerprint="world_a"))
+
+    assert reg.production_version() is not None
+    assert reg.production_version("world_b") is None
+
+
+def test_load_resolves_production_within_a_world(tmp_path):
+    reg = ModelRegistry(tmp_path / "store")
+    reg.promote(reg.save({"m": "a"}, config_fingerprint="world_a"))
+    reg.promote(reg.save({"m": "b"}, config_fingerprint="world_b"))
+
+    assert reg.load(None, fingerprint="world_a")[0] == {"m": "a"}
+    assert reg.load(None, fingerprint="world_b")[0] == {"m": "b"}
+    # an explicit version wins over the fingerprint: the caller already decided
+    assert reg.load("v001", fingerprint="world_b")[0] == {"m": "a"}
+    with pytest.raises(LookupError, match="no production model for research config"):
+        reg.load(None, fingerprint="world_c")
+
+
+def test_legacy_manifests_are_usable_by_any_world(tmp_path):
+    """A pre-fingerprint model records nothing, and nothing is not a mismatch."""
+    reg = ModelRegistry(tmp_path / "store")
+    legacy = reg.save({"m": "old"})
+    reg.promote(legacy)
+    assert reg.production_version("any_world") == legacy
+    assert reg.versions_for_fingerprint("any_world") == [legacy]
+
+
+def test_versions_for_fingerprint_lists_candidates_but_not_retired(tmp_path):
+    reg = ModelRegistry(tmp_path / "store")
+    old = reg.save({"m": 1}, config_fingerprint="world_a")
+    reg.promote(old)
+    new = reg.save({"m": 2}, config_fingerprint="world_a")
+    reg.promote(new)                                    # retires `old`
+    cand = reg.save({"m": 3}, config_fingerprint="world_a")
+    reg.save({"m": 4}, config_fingerprint="world_b")     # different world
+
+    assert reg.versions_for_fingerprint("world_a") == [new, cand]
+
+
 def test_store_loads_universe_and_excludes_missing(tmp_path):
     data_cfg = DataConfig(provider="synthetic", bars=600, min_history_bars=300,
                           cache_dir=tmp_path / "cache")
