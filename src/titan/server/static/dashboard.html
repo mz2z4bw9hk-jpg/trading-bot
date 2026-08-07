@@ -718,13 +718,25 @@ function renderScan() {
     } else {
       // Totals the per-row numbers cannot show: what placing ALL of these
       // would commit and risk at once.
+      // Two heat figures, and the difference between them is the point. The
+      // summed one is the loss if every stop fills on the same bar — the
+      // honest worst case, and the one a concentrated book should be read on.
+      // The effective one is sqrt(r'Cr), which is what the risk cap governs;
+      // a diversified book sits below its own sum, and that gap IS the
+      // diversification. Showing only the sum made the cap look breached.
       const heat = scan.portfolio_heat_pct;
+      const eff = scan.effective_heat_pct;
       $("#orders-empty").innerHTML = heat == null ? "" :
         `<div class="note">Placing all ${orders.length}: ` +
         `<b>${(+scan.gross_notional_pct).toFixed(1)}%</b> of equity in notional, ` +
         `<b>${(+scan.margin_required_pct).toFixed(1)}%</b> posted as margin, ` +
-        `<b>${(+heat).toFixed(2)}%</b> of equity at risk if every stop fills. ` +
-        `Reported, not enforced — size down or take fewer if that is more than you want on.</div>`;
+        `<b>${(+heat).toFixed(2)}%</b> of equity at risk if every stop fills at once` +
+        (eff == null ? "" :
+          `, <b>${(+eff).toFixed(2)}%</b> once the book's correlations are ` +
+          `accounted for — the second is the figure the risk cap enforces, and ` +
+          `the gap between them is what diversification is buying you`) +
+        `. Sizes here are already risk-approved; take fewer if it is more than ` +
+        `you want on.</div>`;
       $("#orders-table").innerHTML = `
         <tr><th>Symbol</th><th>Book</th><th>Side</th><th>Setup</th><th class="num">Limit</th><th class="num">Market</th>
             <th class="num">Entry zone</th><th class="num">Stop</th><th class="num">Targets (T1·T2·T3)</th>
